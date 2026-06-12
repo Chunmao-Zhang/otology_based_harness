@@ -5396,3 +5396,10 @@ textarea#message-input.chat-input:focus-visible,
 .clarify-add-step { align-self: flex-start; padding: 6px 12px; border-radius: 999px; border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--line)); background: none; color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s ease; }
 .clarify-add-step:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .clarify-form .gate-actions { margin-top: 4px; }
+
+/* Evidence manifest grouping */
+.onto-evidence-group { margin: 10px 0 2px; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.onto-evidence-group:first-child { margin-top: 0; }
+.onto-evidence-stage { flex-shrink: 0; align-self: center; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; }
+.onto-evidence-stage.evidence { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); color: var(--accent); }
+.onto-evidence-stage.extract { background: color-mix(in srgb, #f59e0b 16%, var(--panel)); color: #b45309; }

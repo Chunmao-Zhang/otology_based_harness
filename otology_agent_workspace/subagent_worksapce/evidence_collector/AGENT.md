@@ -75,6 +75,27 @@ Rules:
 - If web search is necessary, call it at most once.
 - Use at most 3 search results.
 
+## Web Evidence Persistence
+
+Every `web_search` result you keep must be persisted so later stages can reuse it without searching again:
+
+- Save each kept result to `runs/ontology_workspace_runs/<run_id>/intermediate/web_evidence/<source_id>.json` with this shape:
+
+```json
+{
+  "source_id": "web_001",
+  "query": "...",
+  "url": "...",
+  "title": "...",
+  "snippet": "...",
+  "retrieved_at": "<ISO timestamp>",
+  "collected_stage": "evidence"
+}
+```
+
+- Register each saved result in the manifest `sources` list as `{"source_id": "web_001", "source_kind": "web", "url": "...", "title": "...", "evidence_path": "...", "reason": "..."}`.
+- Use sequential ids `web_001`, `web_002`, ... Discarded search results must not be saved or registered.
+
 ## File Rules
 
 - Write evidence manifests under `runs/ontology_workspace_runs/<run_id>/intermediate/evidence_manifest.json` when a run id is known.

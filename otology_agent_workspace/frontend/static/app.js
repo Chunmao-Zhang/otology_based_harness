@@ -482,17 +482,28 @@
           </div>
         `).join('')
       : '<div class="onto-empty">No files uploaded yet. Upload CSV, TXT or MD files as evidence for schema building and data extraction.</div>';
-    const sourcesHtml = evidence.sources && evidence.sources.length
-      ? evidence.sources.map((source) => `
-          <div class="onto-evidence-row">
-            <span class="onto-evidence-kind ${escapeHtml(source.source_kind || '')}">${source.source_kind === 'web' ? 'Web' : 'Upload'}</span>
-            <div class="onto-file-info">
-              <strong>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener">${escapeHtml(source.source_id)}</a>` : escapeHtml(source.source_id)}</strong>
-              <small>${escapeHtml(source.reason || '')}</small>
-            </div>
-          </div>
-        `).join('')
-      : '<div class="onto-empty">No evidence manifest yet. Ask a question and confirm it to see the evidence sources used.</div>';
+    const allSources = evidence.sources || [];
+    const uploadSources = allSources.filter((source) => source.source_kind !== 'web');
+    const webSources = allSources.filter((source) => source.source_kind === 'web');
+    const sourceRow = (source) => `
+      <div class="onto-evidence-row">
+        <span class="onto-evidence-kind ${escapeHtml(source.source_kind || '')}">${source.source_kind === 'web' ? 'Web' : 'Upload'}</span>
+        <div class="onto-file-info">
+          <strong>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener">${escapeHtml(source.title || source.source_id)}</a>` : escapeHtml(source.title || source.source_id)}</strong>
+          <small>${escapeHtml(source.reason || '')}</small>
+        </div>
+        ${source.source_kind === 'web' ? `<span class="onto-evidence-stage ${source.stage === 'extract' ? 'extract' : 'evidence'}">${source.stage === 'extract' ? 'Extraction' : 'Collection'}</span>` : ''}
+      </div>
+    `;
+    const emptyManifest = '<div class="onto-empty">No evidence manifest yet. Ask a question and confirm it to see the evidence sources used.</div>';
+    const sourcesHtml = allSources.length
+      ? `
+        <h4 class="onto-evidence-group">Uploaded files</h4>
+        ${uploadSources.length ? uploadSources.map(sourceRow).join('') : '<div class="onto-empty">No uploaded files were used.</div>'}
+        <h4 class="onto-evidence-group">Web sources</h4>
+        ${webSources.length ? webSources.map(sourceRow).join('') : '<div class="onto-empty">No web search was needed.</div>'}
+      `
+      : emptyManifest;
     el.evidenceContent.innerHTML = `
       <div class="onto-section">
         <div class="onto-section-head">

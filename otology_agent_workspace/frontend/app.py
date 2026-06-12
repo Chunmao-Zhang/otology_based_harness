@@ -294,6 +294,8 @@ async def evidence_summary():
             "file_type": source.get("file_type", ""),
             "reason": source.get("reason", ""),
             "url": source.get("url", ""),
+            "title": source.get("title", ""),
+            "stage": source.get("collected_stage", ""),
         })
     return {
         "ok": True,
@@ -571,9 +573,16 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
         (run_dir / "concepts" / "draft_schema.py").write_text(MOCK_SCHEMA, encoding="utf-8")
         (run_dir / "intermediate" / "evidence_manifest.json").write_text(json.dumps({
             "question": "Which companies in the US do data analytics?",
-            "needs_web_search": False,
-            "sources": [{"source_id": "company_sample.csv", "source_kind": "upload", "file_type": "csv",
-                         "reason": "Sample company table with company name, country and industry fields"}],
+            "needs_web_search": True,
+            "sources": [
+                {"source_id": "company_sample.csv", "source_kind": "upload", "file_type": "csv",
+                 "reason": "Sample company table with company name, country and industry fields"},
+                {"source_id": "web_001", "source_kind": "web", "file_type": "html",
+                 "title": "Top data analytics companies in the US",
+                 "url": "https://example.com/us-data-analytics-companies",
+                 "collected_stage": "evidence",
+                 "reason": "Supplements industry sub-domain labels missing from the upload"},
+            ],
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         for stage, pause in (("evidence", 1.2), ("schema_build", 1.6), ("schema_judge", 1.2)):
             emit({"type": "stage", "stage": stage, "status": "running"})

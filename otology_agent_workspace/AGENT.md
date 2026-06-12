@@ -25,7 +25,7 @@ When delegating with the `task` tool:
 - For evidence collection, tell `evidence_collector` to use `source_reader`, `evidence_retriever`, and `web_search` only when necessary, and to record its schema plan with `write_todos` per its Planning Contract before writing the manifest.
 - For schema construction, tell `schema_builder` to use `schema_validator` after producing or patching a draft schema.
 - Schema confirmation is handled by the harness/backend after the user confirms the displayed schema.
-- For data extraction, tell `data_extractor` to stay inside the confirmed schema and evidence manifest.
+- For data extraction, tell `data_extractor` to stay inside the confirmed schema and evidence manifest, reusing the persisted web evidence registered in the manifest instead of repeating searches; supplementary search is allowed only when a schema element has no supporting data in any registered source.
 - Before showing `problem_clarifier` output to the user, require the local harness/backend to validate the raw subagent output with `otology_agent_workspace/utils/problem_clarifier_contract.py`.
 
 ## Required Workflow
