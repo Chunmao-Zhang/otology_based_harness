@@ -5080,6 +5080,10 @@ textarea#message-input.chat-input:focus-visible,
   background: color-mix(in srgb, var(--panel-strong) 94%, var(--accent-soft));
 }
 
+.onto-stage-strip[hidden] {
+  display: none;
+}
+
 .onto-stage-chip {
   display: inline-flex;
   align-items: center;
