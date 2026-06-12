@@ -5321,3 +5321,61 @@ textarea#message-input.chat-input:focus-visible,
 .history-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .history-item-main strong { font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-item-main small { font-size: 11px; color: var(--ink-muted); }
+
+/* Input-bar attachments (+ button & chips) */
+.onto-upload-segment .kb-scope-current { color: #fff; max-width: 170px; }
+
+.attach-add-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255,255,255,0.7);
+  background: rgba(255,255,255,0.14);
+  color: #fff;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background .15s ease, transform .15s ease;
+}
+.attach-add-btn:hover { background: rgba(255,255,255,0.28); transform: scale(1.06); }
+
+.attach-chips {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% + 10px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 420px;
+  z-index: 60;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
+  white-space: nowrap;
+}
+.attach-chip-remove {
+  border: 0;
+  background: none;
+  color: var(--ink-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 0 0 2px;
+}
+.attach-chip-remove:hover { color: var(--accent); }

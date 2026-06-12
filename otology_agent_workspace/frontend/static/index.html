@@ -8,7 +8,7 @@
   <title>Ontology QA Agent</title>
   <link rel="icon" href="/static/assets/knowcoder-logo.svg" type="image/svg+xml">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=20260612-ontology-v2">
+  <link rel="stylesheet" href="/static/style.css?v=20260612-ontology-v3">
 </head>
 <body class="light-theme" data-agent-id="ontology_coordinator">
   <header class="navbar">
@@ -89,12 +89,11 @@
           </div>
           <div class="kb-scope-text">
             <span class="kb-scope-kicker">Attached files</span>
-            <button type="button" class="kb-scope-trigger" id="upload-trigger" aria-haspopup="listbox" aria-expanded="false">
-              <span class="kb-scope-current" id="upload-current">No files attached</span>
-              <svg class="kb-scope-caret" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path fill="currentColor" d="M0 0l5 6 5-6z"/></svg>
-            </button>
+            <span class="kb-scope-current" id="upload-current">No files attached</span>
           </div>
-          <div class="kb-scope-menu" id="upload-menu" role="listbox" hidden></div>
+          <button type="button" class="attach-add-btn" id="attach-add" title="Attach files from your computer" aria-label="Attach files from your computer">+</button>
+          <input type="file" id="chat-file-input" accept=".csv,.txt,.md" multiple hidden>
+          <div class="attach-chips" id="attach-chips" hidden></div>
         </div>
         <div class="input-segment">
           <textarea class="chat-input" id="message-input" rows="1" placeholder="Ask the Ontology QA Agent..." style="border:0;outline:0;box-shadow:none;-webkit-appearance:none;appearance:none;"></textarea>
@@ -179,6 +178,6 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
-  <script src="/static/app.js?v=20260612-ontology-v2"></script>
+  <script src="/static/app.js?v=20260612-ontology-v3"></script>
 </body>
 </html>

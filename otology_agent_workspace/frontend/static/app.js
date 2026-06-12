@@ -25,9 +25,10 @@
     stageStrip: document.getElementById('stage-strip'),
     uploadMetric: document.getElementById('upload-metric'),
     heroUpload: document.getElementById('hero-upload'),
-    uploadTrigger: document.getElementById('upload-trigger'),
     uploadCurrent: document.getElementById('upload-current'),
-    uploadMenu: document.getElementById('upload-menu'),
+    attachAdd: document.getElementById('attach-add'),
+    chatFileInput: document.getElementById('chat-file-input'),
+    attachChips: document.getElementById('attach-chips'),
     fabContainer: document.getElementById('fab-container'),
     fabMain: document.getElementById('fab-main'),
     fabEvidence: document.getElementById('fab-evidence'),
@@ -270,6 +271,8 @@
     const uploadIds = Array.from(state.selectedUploads);
     state.ws.send(JSON.stringify({ type: 'chat', content, upload_ids: uploadIds }));
     el.input.value = '';
+    state.selectedUploads.clear();
+    renderAttachments();
     autoSizeInput();
   }
 
@@ -347,38 +350,38 @@
     `).join('<span class="onto-stage-sep"></span>');
   }
 
-  // ── Upload selector (input bar) ─────────────────────────────────────────
+  // ── Attachments (input bar) ─────────────────────────────────────────────
 
-  function renderUploadSelector() {
-    const count = state.selectedUploads.size;
-    el.uploadCurrent.textContent = count ? `${count} file(s) selected` : 'No files attached';
-    el.uploadMenu.innerHTML = state.uploads.length
-      ? state.uploads.map((upload) => {
-        const selected = state.selectedUploads.has(upload.id);
-        return `
-          <button class="kb-scope-menu-item" role="option" aria-selected="${selected}" data-upload="${escapeHtml(upload.id)}">
-            <span class="kb-scope-menu-item-dot"></span>
-            <span class="kb-scope-menu-item-name">${escapeHtml(upload.name)}</span>
-            <span class="kb-scope-menu-item-meta">${selected ? 'Selected' : upload.type.toUpperCase()}</span>
-          </button>
-        `;
-      }).join('')
-      : '<div class="kb-scope-menu-empty">No files uploaded yet. Upload one in "Files &amp; Evidence".</div>';
-    el.uploadMenu.querySelectorAll('[data-upload]').forEach((button) => {
+  function renderAttachments() {
+    const attached = state.uploads.filter((upload) => state.selectedUploads.has(upload.id));
+    el.uploadCurrent.textContent = attached.length ? `${attached.length} file(s) attached` : 'No files attached';
+    el.attachChips.hidden = !attached.length;
+    el.attachChips.innerHTML = attached.map((upload) => `
+      <span class="attach-chip">
+        📎 ${escapeHtml(upload.name)}
+        <button type="button" class="attach-chip-remove" data-detach="${escapeHtml(upload.id)}" title="Remove attachment" aria-label="Remove attachment">×</button>
+      </span>
+    `).join('');
+    el.attachChips.querySelectorAll('[data-detach]').forEach((button) => {
       button.addEventListener('click', () => {
-        const id = button.getAttribute('data-upload');
-        if (state.selectedUploads.has(id)) state.selectedUploads.delete(id);
-        else state.selectedUploads.add(id);
-        renderUploadSelector();
+        state.selectedUploads.delete(button.getAttribute('data-detach'));
+        renderAttachments();
       });
     });
   }
 
-  function toggleUploadMenu(open) {
-    const shouldOpen = open != null ? open : el.uploadMenu.hidden;
-    el.uploadMenu.hidden = !shouldOpen;
-    el.uploadMenu.dataset.open = shouldOpen ? 'true' : 'false';
-    el.uploadTrigger.setAttribute('aria-expanded', String(shouldOpen));
+  async function uploadAndAttachFiles(files) {
+    for (const file of files) {
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const data = await api('/api/uploads', { method: 'POST', body: form });
+        if (data.upload && data.upload.id) state.selectedUploads.add(data.upload.id);
+      } catch (err) {
+        alert(`Upload failed: ${err.message}`);
+      }
+    }
+    await refreshUploads();
   }
 
   // ── Panel: evidence tab ─────────────────────────────────────────────────
@@ -393,7 +396,7 @@
     } catch (err) {
       state.uploads = [];
     }
-    renderUploadSelector();
+    renderAttachments();
     if (el.uploadMetric) el.uploadMetric.textContent = `${state.uploads.length} uploaded file(s)`;
   }
 
@@ -432,7 +435,7 @@
             <span>+ Upload file</span>
           </label>
         </div>
-        <p class="onto-section-hint">Supports CSV / TXT / MD. After uploading, select files to attach from the left of the input box.</p>
+        <p class="onto-section-hint">Supports CSV / TXT / MD. Use the + button next to the input box to attach files to a question.</p>
         <div class="onto-file-list">${uploadsHtml}</div>
       </div>
       <div class="onto-section">
@@ -797,9 +800,13 @@
       button.addEventListener('click', () => openPanel(button.dataset.tab));
     });
 
-    el.uploadTrigger.addEventListener('click', () => toggleUploadMenu());
+    el.attachAdd.addEventListener('click', () => el.chatFileInput.click());
+    el.chatFileInput.addEventListener('change', async () => {
+      const files = Array.from(el.chatFileInput.files || []);
+      el.chatFileInput.value = '';
+      if (files.length) await uploadAndAttachFiles(files);
+    });
     document.addEventListener('click', (event) => {
-      if (!event.target.closest('#upload-segment')) toggleUploadMenu(false);
       if (!event.target.closest('#fab-container')) closeFab();
     });
 
