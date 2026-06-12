@@ -1,0 +1,83 @@
+"""工具注册表
+
+职责：
+- 根据 agent workspace 动态加载工具（workspace 自动扫描）
+- 提供少量 harness 内置基础工具（web_search、save_memory）
+- 根据 agent 配置的 tools.allow/deny 过滤
+- 返回该 agent 可用的工具列表
+"""
+
+from __future__ import annotations
+
+from langchain_core.tools import BaseTool
+
+from harness.config.schema import AgentConfig
+from harness.tools.code_executor import execute_code
+from harness.tools.web_search import web_search
+from harness.tools.memory_writer import save_memory
+from harness.tools.workspace_loader import load_workspace_tools
+
+
+# harness 内置基础工具，所有 agent 都可以按需 allow/deny
+_BASE_TOOLS: dict[str, BaseTool] = {
+    "execute_code": execute_code,
+    "web_search": web_search,
+    "save_memory": save_memory,
+}
+
+# 保留向后兼容导出，值等同于 _BASE_TOOLS（不再包含 KBQA 工具）
+ALL_CUSTOM_TOOLS: dict[str, BaseTool] = dict(_BASE_TOOLS)
+
+
+def _catalog_for_agent(
+    agent_cfg: AgentConfig,
+    workspace_dir: str | None = None,
+    harness_root: str | None = None,
+) -> dict[str, BaseTool]:
+    """Return the full tool catalog for an agent.
+
+    工具来源优先级（低 -> 高，高者覆盖同名工具）：
+      1. harness 内置基础工具（web_search、save_memory）
+      2. workspace-local 工具（从 workspace/tools/*.py 扫描）
+
+    mode=replace 时只有基础工具 + workspace 工具；
+    mode=extend  时继承基础工具 + workspace 工具（目前基础工具即全部全局工具）。
+    """
+    workspace_spec = load_workspace_tools(workspace_dir, harness_root)
+    workspace_tools = {tool.name: tool for tool in workspace_spec.tools}
+    # 两种模式结果相同（基础工具 + workspace 工具），replace 语义已无差别，
+    # 保留字段是为了让 workspace 未来可以显式声明"完全替换"。
+    return {
+        **_BASE_TOOLS,
+        **workspace_tools,
+    }
+
+
+def get_tools_for_agent(
+    agent_cfg: AgentConfig,
+    workspace_dir: str | None = None,
+    harness_root: str | None = None,
+) -> list[BaseTool]:
+    """根据 agent 配置的 allow/deny 返回可用工具列表
+
+    规则：
+    - allow: ["*"] 表示所有工具可用
+    - deny 优先于 allow
+    """
+    catalog = _catalog_for_agent(agent_cfg, workspace_dir=workspace_dir, harness_root=harness_root)
+    tools_cfg = agent_cfg.tools
+    if tools_cfg is None:
+        return list(catalog.values())
+
+    allow = tools_cfg.allow
+    deny = set(tools_cfg.deny)
+
+    # 确定候选工具；保留 catalog 插入顺序，避免工具列表随机抖动。
+    if "*" in allow:
+        candidates = list(catalog.keys())
+    else:
+        allow_set = set(allow)
+        candidates = [name for name in catalog.keys() if name in allow_set]
+
+    final = [name for name in candidates if name not in deny]
+    return [catalog[name] for name in final if name in catalog]

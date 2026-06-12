@@ -1,0 +1,3 @@
+{"question":"美国有哪些数据分析公司","schema_path":"otology_agent_workspace/utils/answerable_company_schema.py","expected_answerable":true}
+{"question":"美国有哪些数据分析公司","schema_path":"otology_agent_workspace/utils/unanswerable_company_schema.py","expected_answerable":false}
+{"question":"公司总部在哪个国家","schema_path":"otology_agent_workspace/utils/invalid_unknown_relation.py","expected_answerable":false}

@@ -1,0 +1,3 @@
+{"question":"美国有哪些数据分析公司","evidence_manifest_path":"runs/ontology_workspace_runs/contract/intermediate/evidence_manifest.json","expected_concepts":["Company","Industry"],"expected_fields":["country","operates_in_industry"]}
+{"question":"列出公司及所属行业","evidence_manifest_path":"runs/ontology_workspace_runs/contract/intermediate/evidence_manifest.json","expected_concepts":["Company","Industry"],"expected_fields":["operates_in_industry"]}
+{"question":"哪些美国公司属于数据分析领域","evidence_manifest_path":"runs/ontology_workspace_runs/contract/intermediate/evidence_manifest.json","expected_concepts":["Company","Industry"],"expected_fields":["country"]}

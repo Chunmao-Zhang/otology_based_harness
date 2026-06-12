@@ -1,0 +1,3 @@
+{"question":"这些文件里有哪些数据分析公司","upload_paths":["test_data/ontology/company_sample.csv"],"expected_needs_web_search":false}
+{"question":"根据说明整理数据分析公司相关证据","upload_paths":["test_data/ontology/company_notes.txt"],"expected_needs_web_search":false}
+{"question":"美国有哪些最新的数据分析公司榜单","upload_paths":[],"expected_needs_web_search":true}

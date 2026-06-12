@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Knowledge Computing Agent (KC-Agent)</title>
+  <link rel="icon" href="/static/assets/knowcoder-logo.svg" type="image/svg+xml">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=20260610-kbqa-code-panel-v4">
+</head>
+<body class="light-theme" data-agent-id="deepagents_kbqa_general">
+  <header class="navbar">
+    <div class="navbar-content">
+      <div class="logo" id="brand-home" title="Back to welcome">
+        <img src="/static/assets/knowcoder-logo.svg" alt="Studio logo" class="logo-img">
+        <span class="logo-text-wrap">
+          <span class="logo-text">Knowledge Computing Agent (KC-Agent)</span>
+          <span class="logo-subtext">Upload graphs, ask grounded questions</span>
+        </span>
+      </div>
+      <div class="nav-right">
+        <div class="status-chip" id="status-pill"><span class="status-dot"></span><span>Checking runtime</span></div>
+        <div class="model-chip" id="model-chip">Model</div>
+        <button class="icon-btn" id="history-btn" title="View conversations" aria-label="View conversations">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 1a7 7 0 1 0 6.32 4H13.2A6 6 0 1 1 8 2v2.2L11.2 1 8-2.2V1Zm.5 3.5h-1v4l3.2 1.9.5-.86-2.7-1.6V4.5Z"/></svg>
+        </button>
+        <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 12.5A4.5 4.5 0 1 0 8 3.5a4.5 4.5 0 0 0 0 9Zm0 1A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11ZM8 .5a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V1A.5.5 0 0 1 8 .5Zm0 13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0v-1a.5.5 0 0 1 .5-.5ZM.5 8a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1H1A.5.5 0 0 1 .5 8Zm13 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5Z"/></svg>
+        </button>
+        <button class="nav-new-chat" id="new-chat"><span>New chat</span><strong>⌘N</strong></button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <div class="chat-container">
+      <section class="welcome-section" id="hero">
+        <div class="hero-title-row">
+          <div class="hero-graph-icon" aria-label="Graph question answering icon">
+            <span class="hero-node">Q</span>
+            <span class="hero-edge"></span>
+            <span class="hero-node">KG</span>
+            <span class="hero-edge"></span>
+            <span class="hero-node answer">A</span>
+          </div>
+          <h1 class="welcome-title">Knowledge Computing Agent (KC-Agent)</h1>
+        </div>
+        <p class="welcome-description">A graph-first coding agent that uploads your knowledge graph (typed or plain triples), explores entities and relations, and answers questions by grounding code reasoning in selected graph evidence.</p>
+        <div class="quick-metrics" id="quick-metrics">
+          <div class="metric-card"><span>Skills</span><strong id="skill-count">3 reasoning skills</strong></div>
+          <div class="metric-card"><span>Tools</span><strong id="tool-count">6 graph tools</strong></div>
+        </div>
+        <button class="hero-upload-btn" id="hero-upload-graph" type="button">
+          <span>Upload or manage a graph</span>
+          <small>Open graph management</small>
+        </button>
+      </section>
+
+      <section class="chat-messages" id="messages" aria-live="polite"></section>
+    </div>
+  </main>
+
+  <section class="input-section" id="input-section">
+    <div class="input-shell">
+      <div class="run-indicator" id="run-indicator">
+        <span></span>
+        <strong>Agent is working</strong>
+        <em id="run-detail"></em>
+        <button id="reset-run" type="button">Reset</button>
+      </div>
+      <div class="scope-warm-progress" id="scope-warm-progress" role="status" aria-live="polite" hidden>
+        <div class="scope-warm-progress-row">
+          <div class="scope-warm-progress-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M12 2.5l2.2 5.6 5.8.5-4.4 3.8 1.4 5.6L12 15.3l-5 2.7 1.4-5.6L4 8.6l5.8-.5L12 2.5z"/>
+            </svg>
+          </div>
+          <div class="scope-warm-progress-body">
+            <div class="scope-warm-progress-text">
+              <span class="scope-warm-progress-label" id="scope-warm-progress-label">Preparing knowledge base…</span>
+              <span class="scope-warm-progress-percent" id="scope-warm-progress-percent">0%</span>
+            </div>
+            <div class="scope-warm-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="scope-warm-progress-track">
+              <div class="scope-warm-progress-fill" id="scope-warm-progress-fill"></div>
+            </div>
+            <div class="scope-warm-progress-sub" id="scope-warm-progress-sub"></div>
+          </div>
+        </div>
+      </div>
+      <div class="input-container">
+        <div class="kb-scope-segment">
+          <div class="kb-scope-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <defs>
+                <linearGradient id="kbicon-grad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#3b82f6"/>
+                  <stop offset="100%" stop-color="#1d4ed8"/>
+                </linearGradient>
+              </defs>
+              <path d="M5 7.5L12 4l7 3.5v9L12 20l-7-3.5v-9z" fill="url(#kbicon-grad)" opacity="0.18"/>
+              <path d="M5 7.5L12 4l7 3.5v9L12 20l-7-3.5v-9z" fill="none" stroke="url(#kbicon-grad)" stroke-width="1.4" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="2" fill="url(#kbicon-grad)"/>
+              <path d="M12 10V5M12 14v5M10 12H5M14 12h5" stroke="url(#kbicon-grad)" stroke-width="1.2" stroke-linecap="round" opacity="0.55"/>
+            </svg>
+          </div>
+          <div class="kb-scope-text">
+            <span class="kb-scope-kicker">KNOWLEDGE BASE</span>
+            <button type="button" class="kb-scope-trigger" id="kb-scope-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="kb-scope-current" id="kb-scope-current">Select a knowledge base</span>
+              <svg class="kb-scope-caret" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path fill="currentColor" d="M0 0l5 6 5-6z"/></svg>
+            </button>
+          </div>
+          <select id="graph-scope-select" class="kb-scope-native" aria-hidden="true" tabindex="-1"></select>
+          <div class="kb-scope-menu" id="kb-scope-menu" role="listbox" hidden></div>
+        </div>
+        <div class="input-segment">
+          <textarea class="chat-input" id="message-input" rows="1" placeholder="Ask Knowledge Computing Agent (KC-Agent)..." style="border:0;outline:0;box-shadow:none;-webkit-appearance:none;appearance:none;"></textarea>
+          <button class="send-btn" id="send-button" aria-label="Send">
+            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1.7 1.05a.5.5 0 0 0-.69.56l1.4 4.84a.5.5 0 0 0 .4.36l5.7.95c.27.04.27.42 0 .46l-5.7.95a.5.5 0 0 0-.4.36L1.01 14.4a.5.5 0 0 0 .7.55l13.98-7a.5.5 0 0 0 0-.9L1.7 1.05Z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="ai-disclaimer">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14Zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm.93-9.41-2.29.28-.08.38.45.08c.29.07.35.18.29.47l-.74 3.47c-.2.9.1 1.32.8 1.32.55 0 1.18-.25 1.47-.6l.09-.42c-.2.18-.5.25-.69.25-.27 0-.37-.2-.3-.53l1-4.7ZM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg>
+        <span>Enter to send · Shift + Enter for a new line · Sessions save to outputs/deepagents_kbqa_general/frontend_sessions</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="fab-container" id="fab-container">
+    <button class="fab-main" id="fab-main" type="button" title="Open graph workspace actions" aria-label="Open graph workspace actions" aria-controls="fab-schema fab-import" aria-expanded="false">
+      <span class="fab-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3Zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3ZM1 10.5A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3Zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3Z"/></svg>
+      </span>
+      <span class="fab-copy">
+        <strong>Graph Workspace</strong>
+        <small>Manage uploads and evidence</small>
+      </span>
+      <span class="fab-caret" aria-hidden="true">⌃</span>
+    </button>
+    <button class="fab-action" id="fab-schema" type="button" title="Open Graph Explorer" aria-label="Open Graph Explorer" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">View</span>
+      <strong>Graph Explorer</strong>
+      <small>Inspect nodes, relations, and triples</small>
+    </button>
+    <button class="fab-action" id="fab-import" type="button" title="Open Graph Management" aria-label="Open Graph Management" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">Upload</span>
+      <strong>Graph Management</strong>
+      <small>Add TXT, JSON, or Excel triples</small>
+    </button>
+  </div>
+
+
+
+  <aside class="activities-panel" id="activities-panel">
+    <div class="panel-header">
+      <div class="panel-tabs">
+        <button class="panel-tab active" data-tab="schema" id="schema-tab">Graph Explorer</button>
+        <button class="panel-tab" data-tab="import" id="import-tab">Graph Management</button>
+      </div>
+      <button class="close-panel" id="close-panel" aria-label="Close panel">×</button>
+    </div>
+    <div class="panel-body">
+      <section class="panel-section active" id="schema-content"></section>
+      <section class="panel-section" id="import-content"></section>
+    </div>
+  </aside>
+
+  <div class="history-overlay" id="history-overlay"></div>
+  <section class="history-modal" id="history-modal" aria-modal="true" role="dialog">
+    <div class="modal-header">
+      <div>
+        <span class="modal-eyebrow">Session library</span>
+        <h2>Conversation History</h2>
+        <p>Reopen previous graph investigations or clean up saved chats.</p>
+      </div>
+      <div class="modal-actions">
+        <span class="history-count" id="session-count">0 saved</span>
+        <button class="history-start" id="history-new-chat" type="button">New chat</button>
+      </div>
+      <button class="close-modal" id="close-history" aria-label="Close history">×</button>
+    </div>
+    <div class="history-list" id="session-list"></div>
+  </section>
+
+  <script>
+    window.STUDIO_CONFIG = {
+      agentId: "deepagents_kbqa_general",
+      brand: "Knowledge Computing Agent (KC-Agent)",
+      outputHint: "outputs/deepagents_kbqa_general/frontend_sessions"
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="/static/app.js?v=20260610-kbqa-code-panel-v4"></script>
+</body>
+</html>

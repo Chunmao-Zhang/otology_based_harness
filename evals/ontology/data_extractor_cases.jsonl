@@ -1,0 +1,3 @@
+{"schema_path":"otology_agent_workspace/utils/valid_company_schema.py","csv_path":"test_data/ontology/company_sample.csv","expected_concepts":["Company","Industry"],"expected_min_companies":4}
+{"schema_path":"otology_agent_workspace/utils/answerable_company_schema.py","csv_path":"test_data/ontology/company_sample.csv","expected_relation":"operates_in_industry"}
+{"schema_path":"otology_agent_workspace/utils/valid_company_schema.py","csv_path":"test_data/ontology/company_sample.csv","expected_source_refs":true}

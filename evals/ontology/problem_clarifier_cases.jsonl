@@ -1,0 +1,3 @@
+{"question":"美国有哪些数据分析公司","upload_paths":[]}
+{"question":"根据这个 CSV 找出华东地区销售额最高的产品","upload_paths":["test_data/ontology/company_sample.csv"]}
+{"question":"比较 A 公司和 B 公司过去三年的研发投入变化","upload_paths":[]}

@@ -1,0 +1,25 @@
+{
+  "triples": [
+    {
+      "head_name": "Aspirin",
+      "head_type": "Compound",
+      "relation": "treats",
+      "tail_name": "pain",
+      "tail_type": "Disease"
+    },
+    {
+      "head_name": "Aspirin",
+      "head_type": "Compound",
+      "relation": "binds",
+      "tail_name": "PTGS1",
+      "tail_type": "Gene"
+    },
+    {
+      "head_name": "TP53",
+      "head_type": "Gene",
+      "relation": "participates",
+      "tail_name": "apoptotic process",
+      "tail_type": "BiologicalProcess"
+    }
+  ]
+}

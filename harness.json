@@ -1,0 +1,163 @@
+{
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "sk-e87cbc49e7da4cb3b9f71ad1db17a12a",
+      "models": {
+        "deepseek-v4-flash": {
+          "context_window": 64000,
+          "max_tokens": 8192
+        }
+      }
+    }
+  },
+  "services": {
+    "serper": {
+      "api_key": "a5699d2fdabc196a22b19853e4f69c0234d918b3",
+      "default_num_results": 3,
+      "max_results_per_call": 3
+    }
+  },
+  "defaults": {
+    "model": "deepseek/deepseek-v4-flash",
+    "temperature": 0,
+    "tools": {
+      "allow": [
+        "*"
+      ],
+      "deny": []
+    },
+    "context": {
+      "keep_turns": 4,
+      "max_input_tokens": 64000,
+      "summary_trigger_fraction": 0.85,
+      "offload_threshold": 20000
+    },
+    "max_steps": 80,
+    "max_concurrent_subagents": 3
+  },
+  "agents": [
+    {
+      "id": "ontology_coordinator",
+      "name": "Ontology Coordinator",
+      "type": "coordinator",
+      "workspace": "otology_agent_workspace",
+      "subagents": [
+        "problem_clarifier",
+        "evidence_collector",
+        "schema_builder",
+        "schema_judger",
+        "data_extractor",
+        "workspace_solver"
+      ],
+      "tools": {
+        "allow": [],
+        "deny": [
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "execute",
+          "ls",
+          "glob",
+          "grep"
+        ]
+      },
+      "description": "Orchestrates ontology-centered question answering with explicit confirmation gates.",
+      "default": true
+    },
+    {
+      "id": "problem_clarifier",
+      "name": "Problem Clarifier",
+      "workspace": "otology_agent_workspace/subagent_worksapce/problem_clarifier",
+      "prompt": "otology_agent_workspace/subagent_worksapce/problem_clarifier/AGENT.md",
+      "tools": {
+        "allow": [
+          "source_reader"
+        ],
+        "deny": []
+      },
+      "description": "Clarifies the user's question and returns only problem plus steps."
+    },
+    {
+      "id": "evidence_collector",
+      "name": "Evidence Collector",
+      "workspace": "otology_agent_workspace/subagent_worksapce/evidence_collector",
+      "prompt": "otology_agent_workspace/subagent_worksapce/evidence_collector/AGENT.md",
+      "tools": {
+        "allow": [
+          "source_reader",
+          "web_search",
+          "evidence_retriever"
+        ],
+        "deny": []
+      },
+      "description": "Reads uploads and controlled web evidence into an evidence manifest."
+    },
+    {
+      "id": "schema_builder",
+      "name": "Schema Builder",
+      "workspace": "otology_agent_workspace/subagent_worksapce/schema_builder",
+      "prompt": "otology_agent_workspace/subagent_worksapce/schema_builder/AGENT.md",
+      "tools": {
+        "allow": [
+          "source_reader",
+          "web_search",
+          "evidence_retriever",
+          "schema_validator"
+        ],
+        "deny": []
+      },
+      "description": "Builds and validates a draft ontology schema from evidence."
+    },
+    {
+      "id": "schema_judger",
+      "name": "Schema Judger",
+      "workspace": "otology_agent_workspace/subagent_worksapce/schema_judger",
+      "prompt": "otology_agent_workspace/subagent_worksapce/schema_judger/AGENT.md",
+      "tools": {
+        "allow": [
+          "schema_validator"
+        ],
+        "deny": []
+      },
+      "description": "Judges whether a schema can answer the question."
+    },
+    {
+      "id": "data_extractor",
+      "name": "Data Extractor",
+      "workspace": "otology_agent_workspace/subagent_worksapce/data_extractor",
+      "prompt": "otology_agent_workspace/subagent_worksapce/data_extractor/AGENT.md",
+      "tools": {
+        "allow": [
+          "source_reader",
+          "web_search",
+          "evidence_retriever"
+        ],
+        "deny": []
+      },
+      "description": "Extracts instances, facts, and relations according to a confirmed schema."
+    },
+    {
+      "id": "workspace_solver",
+      "name": "Workspace Solver",
+      "workspace": "otology_agent_workspace/subagent_worksapce/workspace_solver",
+      "tools": {
+        "allow": [
+          "execute_code"
+        ],
+        "deny": []
+      },
+      "description": "Solves the final question by reading the run workspace and executing code."
+    }
+  ],
+  "sft": {
+    "enabled": true,
+    "output_dir": "runs/harness_conversation_logs",
+    "format": "openai_messages",
+    "include_tool_calls": true,
+    "include_subagent_traces": true
+  },
+  "checkpoints_dir": "checkpoints",
+  "runs_dir": "runs/harness_conversation_logs"
+}

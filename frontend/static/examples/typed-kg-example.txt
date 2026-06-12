@@ -1,0 +1,4 @@
+head_name	head_type	relation	tail_name	tail_type
+Aspirin	Compound	treats	pain	Disease
+Aspirin	Compound	binds	PTGS1	Gene
+TP53	Gene	participates	apoptotic process	BiologicalProcess
