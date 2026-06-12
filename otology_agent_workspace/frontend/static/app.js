@@ -168,11 +168,11 @@
   async function refreshHealth() {
     try {
       const data = await api('/api/health');
-      el.statusPill.innerHTML = '<span class="status-dot online"></span><span>服务正常</span>';
+      el.statusPill.innerHTML = '<span class="status-dot online"></span><span>Service online</span>';
       el.modelChip.textContent = (data.model || 'Model').split('/').pop();
-      if (el.uploadMetric) el.uploadMetric.textContent = `${data.upload_count || 0} 个已上传文件`;
+      if (el.uploadMetric) el.uploadMetric.textContent = `${data.upload_count || 0} uploaded file(s)`;
     } catch (err) {
-      el.statusPill.innerHTML = '<span class="status-dot offline"></span><span>服务不可用</span>';
+      el.statusPill.innerHTML = '<span class="status-dot offline"></span><span>Service unavailable</span>';
     }
   }
 
@@ -225,7 +225,7 @@
       return;
     }
     if (payload.type === 'run_start') {
-      setRunning(true, '智能体正在处理你的请求…');
+      setRunning(true, 'The agent is working on your request…');
       return;
     }
     if (payload.type === 'stage') {
@@ -289,8 +289,8 @@
     const schemaGate = waiting.id === 'confirm_schema';
     return `
       <div class="gate-actions">
-        <button class="gate-confirm" data-action="confirm">确认，继续</button>
-        ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">打开 Schema 工作台</button>' : ''}
+        <button class="gate-confirm" data-action="confirm">Confirm &amp; continue</button>
+        ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>' : ''}
       </div>
     `;
   }
@@ -317,7 +317,7 @@
       return `<article class="message system"><div class="bubble">${escapeHtml(message.content || '')}</div></article>`;
     }).join('');
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
-      button.addEventListener('click', () => sendQuickReply('确认'));
+      button.addEventListener('click', () => sendQuickReply('Confirm'));
     });
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openPanel('schema'));
@@ -351,7 +351,7 @@
 
   function renderUploadSelector() {
     const count = state.selectedUploads.size;
-    el.uploadCurrent.textContent = count ? `已选 ${count} 个文件` : '不附带文件';
+    el.uploadCurrent.textContent = count ? `${count} file(s) selected` : 'No files attached';
     el.uploadMenu.innerHTML = state.uploads.length
       ? state.uploads.map((upload) => {
         const selected = state.selectedUploads.has(upload.id);
@@ -359,11 +359,11 @@
           <button class="kb-scope-menu-item" role="option" aria-selected="${selected}" data-upload="${escapeHtml(upload.id)}">
             <span class="kb-scope-menu-item-dot"></span>
             <span class="kb-scope-menu-item-name">${escapeHtml(upload.name)}</span>
-            <span class="kb-scope-menu-item-meta">${selected ? '已选' : upload.type.toUpperCase()}</span>
+            <span class="kb-scope-menu-item-meta">${selected ? 'Selected' : upload.type.toUpperCase()}</span>
           </button>
         `;
       }).join('')
-      : '<div class="kb-scope-menu-empty">还没有上传文件，去「文件与证据」上传</div>';
+      : '<div class="kb-scope-menu-empty">No files uploaded yet. Upload one in "Files &amp; Evidence".</div>';
     el.uploadMenu.querySelectorAll('[data-upload]').forEach((button) => {
       button.addEventListener('click', () => {
         const id = button.getAttribute('data-upload');
@@ -394,7 +394,7 @@
       state.uploads = [];
     }
     renderUploadSelector();
-    if (el.uploadMetric) el.uploadMetric.textContent = `${state.uploads.length} 个已上传文件`;
+    if (el.uploadMetric) el.uploadMetric.textContent = `${state.uploads.length} uploaded file(s)`;
   }
 
   async function renderEvidenceTab() {
@@ -408,36 +408,36 @@
               <strong>${escapeHtml(upload.name)}</strong>
               <small>${upload.type.toUpperCase()} · ${formatBytes(upload.size)} · ${escapeHtml(upload.uploaded_at || '')}</small>
             </div>
-            <button class="onto-file-delete" data-delete="${escapeHtml(upload.id)}" title="删除文件">×</button>
+            <button class="onto-file-delete" data-delete="${escapeHtml(upload.id)}" title="Delete file">×</button>
           </div>
         `).join('')
-      : '<div class="onto-empty">还没有上传文件。上传 CSV、TXT 或 MD 文件，作为构建 Schema 和抽取数据的证据。</div>';
+      : '<div class="onto-empty">No files uploaded yet. Upload CSV, TXT or MD files as evidence for schema building and data extraction.</div>';
     const sourcesHtml = evidence.sources && evidence.sources.length
       ? evidence.sources.map((source) => `
           <div class="onto-evidence-row">
-            <span class="onto-evidence-kind ${escapeHtml(source.source_kind || '')}">${source.source_kind === 'web' ? '网络' : '上传'}</span>
+            <span class="onto-evidence-kind ${escapeHtml(source.source_kind || '')}">${source.source_kind === 'web' ? 'Web' : 'Upload'}</span>
             <div class="onto-file-info">
               <strong>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener">${escapeHtml(source.source_id)}</a>` : escapeHtml(source.source_id)}</strong>
               <small>${escapeHtml(source.reason || '')}</small>
             </div>
           </div>
         `).join('')
-      : '<div class="onto-empty">本轮还没有生成证据清单。提问并确认问题后，这里会展示用到的证据来源。</div>';
+      : '<div class="onto-empty">No evidence manifest yet. Ask a question and confirm it to see the evidence sources used.</div>';
     el.evidenceContent.innerHTML = `
       <div class="onto-section">
         <div class="onto-section-head">
-          <h3>上传文件</h3>
+          <h3>Uploaded Files</h3>
           <label class="onto-upload-btn">
             <input type="file" id="file-input" accept=".csv,.txt,.md" hidden>
-            <span>+ 上传文件</span>
+            <span>+ Upload file</span>
           </label>
         </div>
-        <p class="onto-section-hint">支持 CSV / TXT / MD。上传后可在输入框左侧选择本轮提问要附带的文件。</p>
+        <p class="onto-section-hint">Supports CSV / TXT / MD. After uploading, select files to attach from the left of the input box.</p>
         <div class="onto-file-list">${uploadsHtml}</div>
       </div>
       <div class="onto-section">
-        <div class="onto-section-head"><h3>本轮证据清单</h3></div>
-        <p class="onto-section-hint">${evidence.needs_web_search ? '本轮使用了网络搜索补充证据。' : '本轮仅使用本地上传文件作为证据。'}</p>
+        <div class="onto-section-head"><h3>Evidence Manifest</h3></div>
+        <p class="onto-section-hint">${evidence.needs_web_search ? 'Web search was used to supplement the evidence.' : 'Only local uploaded files were used as evidence.'}</p>
         <div class="onto-file-list">${sourcesHtml}</div>
       </div>
     `;
@@ -453,7 +453,7 @@
           await refreshUploads();
           renderEvidenceTab();
         } catch (err) {
-          alert(`上传失败：${err.message}`);
+          alert(`Upload failed: ${err.message}`);
         }
       });
     }
@@ -480,9 +480,9 @@
   }
 
   function schemaStatusBadge(status) {
-    if (status === 'confirmed') return '<span class="onto-badge confirmed">已确认</span>';
-    if (status === 'draft') return '<span class="onto-badge draft">草案 · 待确认</span>';
-    return '<span class="onto-badge none">暂无</span>';
+    if (status === 'confirmed') return '<span class="onto-badge confirmed">Confirmed</span>';
+    if (status === 'draft') return '<span class="onto-badge draft">Draft · Pending confirmation</span>';
+    return '<span class="onto-badge none">None</span>';
   }
 
   function renderSchemaTab() {
@@ -490,8 +490,8 @@
     if (!schema || schema.status === 'none' || !schema.schema_text) {
       el.schemaContent.innerHTML = `
         <div class="onto-section">
-          <div class="onto-section-head"><h3>本体 Schema</h3>${schemaStatusBadge('none')}</div>
-          <div class="onto-empty">还没有 Schema。在对话中提问并确认问题后，智能体会构建 Schema 草案并展示在这里，供你查看、修改和确认。</div>
+          <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge('none')}</div>
+          <div class="onto-empty">No schema yet. Ask a question and confirm it, and the agent will build a draft schema here for you to review, edit and confirm.</div>
         </div>
       `;
       return;
@@ -515,28 +515,28 @@
     const editable = schema.status === 'draft';
     el.schemaContent.innerHTML = `
       <div class="onto-section">
-        <div class="onto-section-head"><h3>本体 Schema</h3>${schemaStatusBadge(schema.status)}</div>
-        <p class="onto-section-hint">${editable ? '可直接编辑实体与关系名称，应用修改后再确认。' : 'Schema 已确认，正用于数据抽取与求解。'}</p>
-        <h4 class="onto-subhead">实体</h4>
+        <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
+        <p class="onto-section-hint">${editable ? 'Edit entity and relation names directly, apply changes, then confirm.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
+        <h4 class="onto-subhead">Entities</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table">
-          <thead><tr><th>实体</th><th>语义类型</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="2">无</td></tr>'}</tbody>
+          <thead><tr><th>Entity</th><th>Semantic Type</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="2">None</td></tr>'}</tbody>
         </table></div>
-        <h4 class="onto-subhead">关系</h4>
+        <h4 class="onto-subhead">Relations</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table">
-          <thead><tr><th>Head</th><th>Relation</th><th>Tail</th><th>类型</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="4">无</td></tr>'}</tbody>
+          <thead><tr><th>Head</th><th>Relation</th><th>Tail</th><th>Type</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
         </table></div>
         ${editable ? `
           <div class="onto-schema-actions">
-            <button class="onto-btn secondary" id="schema-apply" ${state.schemaDirty ? '' : 'disabled'}>应用修改</button>
-            <button class="onto-btn primary" id="schema-confirm">确认 Schema</button>
+            <button class="onto-btn secondary" id="schema-apply" ${state.schemaDirty ? '' : 'disabled'}>Apply changes</button>
+            <button class="onto-btn primary" id="schema-confirm">Confirm Schema</button>
           </div>
           <div class="onto-schema-errors" id="schema-errors"></div>
         ` : ''}
       </div>
       <div class="onto-section">
-        <div class="onto-section-head"><h3>Python 视图</h3></div>
+        <div class="onto-section-head"><h3>Python View</h3></div>
         <pre class="onto-code"><code class="language-python">${escapeHtml(schema.schema_text)}</code></pre>
       </div>
     `;
@@ -577,7 +577,7 @@
             body: JSON.stringify({ run_id: schema.run_id, form: state.schemaForm }),
           });
           if (!data.ok) {
-            errorsBox.textContent = (data.errors || []).join('；') || '修改未通过校验';
+            errorsBox.textContent = (data.errors || []).join('; ') || 'Changes failed validation';
             return;
           }
           state.schema = data;
@@ -585,7 +585,7 @@
           state.schemaDirty = false;
           renderSchemaTab();
         } catch (err) {
-          errorsBox.textContent = `应用失败：${err.message}`;
+          errorsBox.textContent = `Apply failed: ${err.message}`;
         }
       });
     }
@@ -600,15 +600,15 @@
             body: JSON.stringify({ run_id: schema.run_id }),
           });
           if (!data.ok) {
-            errorsBox.textContent = (data.errors || []).join('；') || '确认失败';
+            errorsBox.textContent = (data.errors || []).join('; ') || 'Confirmation failed';
             return;
           }
           state.schema = data;
           state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
           renderSchemaTab();
-          sendQuickReply('我已在 Schema 工作台中确认 Schema，请继续。');
+          sendQuickReply('I have confirmed the schema in Schema Studio. Please continue.');
         } catch (err) {
-          errorsBox.textContent = `确认失败：${err.message}`;
+          errorsBox.textContent = `Confirmation failed: ${err.message}`;
         }
       });
     }
@@ -625,33 +625,33 @@
           <div class="onto-stage-row ${escapeHtml(stage.status)}">
             <span class="onto-stage-dot"><i>${stageIcon(stage.status)}</i></span>
             <span class="onto-stage-label">${escapeHtml(stage.label)}</span>
-            <span class="onto-stage-status">${{ pending: '待开始', running: '进行中', waiting: '等你确认', done: '已完成' }[stage.status] || ''}</span>
+            <span class="onto-stage-status">${{ pending: 'Pending', running: 'Running', waiting: 'Awaiting your confirmation', done: 'Done' }[stage.status] || ''}</span>
           </div>
         `).join('')
-      : '<div class="onto-empty">还没有运行记录。发送问题后，这里会展示流程进度。</div>';
+      : '<div class="onto-empty">No runs yet. Send a question to see pipeline progress here.</div>';
     const report = results.report || {};
     const hasReport = report.total_instances != null;
     const reportHtml = hasReport
       ? `
         <div class="onto-stats-grid">
-          <div class="onto-stat"><strong>${report.total_instances}</strong><span>实例</span></div>
-          <div class="onto-stat"><strong>${report.total_facts}</strong><span>事实</span></div>
-          <div class="onto-stat"><strong>${report.total_relations}</strong><span>关系</span></div>
-          <div class="onto-stat"><strong>${report.avg_confidence != null ? Number(report.avg_confidence).toFixed(2) : '-'}</strong><span>平均置信度</span></div>
+          <div class="onto-stat"><strong>${report.total_instances}</strong><span>Instances</span></div>
+          <div class="onto-stat"><strong>${report.total_facts}</strong><span>Facts</span></div>
+          <div class="onto-stat"><strong>${report.total_relations}</strong><span>Relations</span></div>
+          <div class="onto-stat"><strong>${report.avg_confidence != null ? Number(report.avg_confidence).toFixed(2) : '-'}</strong><span>Avg confidence</span></div>
         </div>
-        ${(report.relation_types_used || []).length ? `<p class="onto-section-hint">使用的关系：${report.relation_types_used.map(escapeHtml).join('、')}</p>` : ''}
+        ${(report.relation_types_used || []).length ? `<p class="onto-section-hint">Relations used: ${report.relation_types_used.map(escapeHtml).join(', ')}</p>` : ''}
       `
-      : '<div class="onto-empty">数据抽取完成后，这里会展示实例、事实和关系的统计摘要。</div>';
+      : '<div class="onto-empty">After data extraction, a summary of instances, facts and relations will appear here.</div>';
     const sourcesHtml = (results.answer_sources || []).length
       ? `<ul class="onto-source-list">${results.answer_sources.map((source) => `<li>${escapeHtml(source)}</li>`).join('')}</ul>`
       : '';
     el.progressContent.innerHTML = `
       <div class="onto-section">
-        <div class="onto-section-head"><h3>流程进度</h3></div>
+        <div class="onto-section-head"><h3>Pipeline Progress</h3></div>
         <div class="onto-stage-list">${stageHtml}</div>
       </div>
       <div class="onto-section">
-        <div class="onto-section-head"><h3>抽取结果摘要</h3></div>
+        <div class="onto-section-head"><h3>Extraction Summary</h3></div>
         ${reportHtml}
         ${sourcesHtml}
       </div>
@@ -708,18 +708,18 @@
   async function openHistory() {
     const data = await api('/api/sessions');
     const sessions = data.sessions || [];
-    el.historyCount.textContent = `${sessions.length} 条记录`;
+    el.historyCount.textContent = `${sessions.length} record(s)`;
     el.historyList.innerHTML = sessions.length
       ? sessions.map((session) => `
           <div class="history-item" data-session="${escapeHtml(session.id)}">
             <div class="history-item-main">
-              <strong>${escapeHtml(session.title || '新对话')}</strong>
-              <small>${escapeHtml(session.updated_at || '')} · ${session.message_count} 条消息</small>
+              <strong>${escapeHtml(session.title || 'New chat')}</strong>
+              <small>${escapeHtml(session.updated_at || '')} · ${session.message_count} message(s)</small>
             </div>
-            <button class="history-delete" data-delete-session="${escapeHtml(session.id)}" title="删除会话">×</button>
+            <button class="history-delete" data-delete-session="${escapeHtml(session.id)}" title="Delete session">×</button>
           </div>
         `).join('')
-      : '<div class="onto-empty">还没有历史会话。</div>';
+      : '<div class="onto-empty">No previous sessions yet.</div>';
     el.historyList.querySelectorAll('[data-session]').forEach((item) => {
       item.addEventListener('click', (event) => {
         if (event.target.closest('[data-delete-session]')) return;

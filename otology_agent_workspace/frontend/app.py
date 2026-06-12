@@ -52,14 +52,14 @@ _AGENT_LOCK = threading.Lock()
 _AGENT_SINGLETON = None
 
 PIPELINE_STAGES = [
-    {"id": "clarify", "label": "问题澄清"},
-    {"id": "confirm_problem", "label": "确认问题"},
-    {"id": "evidence", "label": "证据收集"},
-    {"id": "schema_build", "label": "Schema 构建"},
-    {"id": "schema_judge", "label": "Schema 评判"},
-    {"id": "confirm_schema", "label": "确认 Schema"},
-    {"id": "extract", "label": "数据抽取"},
-    {"id": "solve", "label": "求解回答"},
+    {"id": "clarify", "label": "Clarify Question"},
+    {"id": "confirm_problem", "label": "Confirm Question"},
+    {"id": "evidence", "label": "Collect Evidence"},
+    {"id": "schema_build", "label": "Build Schema"},
+    {"id": "schema_judge", "label": "Judge Schema"},
+    {"id": "confirm_schema", "label": "Confirm Schema"},
+    {"id": "extract", "label": "Extract Data"},
+    {"id": "solve", "label": "Solve & Answer"},
 ]
 
 SUBAGENT_STAGE = {
@@ -72,12 +72,12 @@ SUBAGENT_STAGE = {
 }
 
 STAGE_RUNNING_TEXT = {
-    "clarify": "正在分析并澄清问题…",
-    "evidence": "正在整理证据（读取上传文件，必要时搜索网络）…",
-    "schema_build": "正在构建本体 Schema…",
-    "schema_judge": "正在评估 Schema 能否回答问题…",
-    "extract": "正在按确认的 Schema 抽取数据…",
-    "solve": "正在工作区中执行代码求解…",
+    "clarify": "Analyzing and clarifying the question…",
+    "evidence": "Gathering evidence (reading uploads, searching the web if needed)…",
+    "schema_build": "Building the ontology schema…",
+    "schema_judge": "Judging whether the schema can answer the question…",
+    "extract": "Extracting data against the confirmed schema…",
+    "solve": "Executing code in the workspace to solve the question…",
 }
 
 
@@ -111,7 +111,7 @@ class SessionStore:
         session_id = uuid4().hex[:12]
         session = {
             "id": session_id,
-            "title": "新对话",
+            "title": "New chat",
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "thread_id": f"ontology-ui-{session_id}",
@@ -130,7 +130,7 @@ class SessionStore:
                 continue
             items.append({
                 "id": data.get("id", path.stem),
-                "title": data.get("title", "新对话"),
+                "title": data.get("title", "New chat"),
                 "created_at": data.get("created_at", ""),
                 "updated_at": data.get("updated_at", ""),
                 "message_count": sum(1 for m in data.get("messages", []) if m.get("role") in ("user", "assistant")),
@@ -230,7 +230,7 @@ async def uploads_index():
 async def upload_file(file: UploadFile = File(...)):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOAD_SUFFIXES:
-        raise HTTPException(status_code=400, detail="仅支持 csv / txt / md 文件")
+        raise HTTPException(status_code=400, detail="Only csv / txt / md files are supported")
     stem = re.sub(r"[^\w.\-]+", "_", Path(file.filename or "upload").stem)[:60] or "upload"
     target = UPLOAD_DIR / f"{stem}{suffix}"
     counter = 1
@@ -330,11 +330,11 @@ async def update_schema_from_form(payload: dict[str, Any]):
     run_id = str(payload.get("run_id", "")).strip()
     form = payload.get("form")
     if not run_id or not isinstance(form, list):
-        raise HTTPException(status_code=400, detail="run_id 和 form 必填")
+        raise HTTPException(status_code=400, detail="run_id and form are required")
     run_dir = RUNS_DIR / Path(run_id).name
     draft = run_dir / "concepts" / "draft_schema.py"
     if not draft.exists():
-        raise HTTPException(status_code=404, detail="未找到 draft schema")
+        raise HTTPException(status_code=404, detail="Draft schema not found")
     try:
         text = generate_schema_from_form(form, output_path=draft)
         parsed = parse_schema(text)
@@ -349,11 +349,11 @@ async def update_schema_from_form(payload: dict[str, Any]):
 async def confirm_schema_endpoint(payload: dict[str, Any]):
     run_id = str(payload.get("run_id", "")).strip()
     if not run_id:
-        raise HTTPException(status_code=400, detail="run_id 必填")
+        raise HTTPException(status_code=400, detail="run_id is required")
     run_dir = RUNS_DIR / Path(run_id).name
     draft = run_dir / "concepts" / "draft_schema.py"
     if not draft.exists():
-        raise HTTPException(status_code=404, detail="未找到 draft schema")
+        raise HTTPException(status_code=404, detail="Draft schema not found")
     result = confirm_schema(draft, run_dir / "concepts" / "confirmed_schema.py")
     if not result.get("valid", False):
         return {"ok": False, "errors": result.get("errors", [])}
@@ -540,20 +540,20 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
         (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
         (run_dir / "concepts" / "draft_schema.py").write_text(MOCK_SCHEMA, encoding="utf-8")
         (run_dir / "intermediate" / "evidence_manifest.json").write_text(json.dumps({
-            "question": "美国有哪些数据分析的公司",
+            "question": "Which companies in the US do data analytics?",
             "needs_web_search": False,
             "sources": [{"source_id": "company_sample.csv", "source_kind": "upload", "file_type": "csv",
-                         "reason": "公司样例表，包含公司名称、国家和行业字段"}],
+                         "reason": "Sample company table with company name, country and industry fields"}],
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         for stage, pause in (("evidence", 1.2), ("schema_build", 1.6), ("schema_judge", 1.2)):
             emit({"type": "stage", "stage": stage, "status": "running"})
             time.sleep(pause)
         emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
         return (
-            "Schema 草案已构建完成，评判结果：可以回答该问题（覆盖度 0.92）。\n\n"
+            "The draft schema is ready. Judgment: the question is answerable (coverage 0.92).\n\n"
             "| Head | Relation | Tail |\n|---|---|---|\n"
             "| Company | operates_in_industry | Industry |\n\n"
-            "请在右侧「Schema 工作台」中查看并编辑，确认后我会继续抽取数据。"
+            "Review and edit it in the Schema Studio on the right. Once you confirm, I will continue with data extraction."
         )
     if stages.get("confirm_schema") == "waiting":
         run_dir = latest_run_with("concepts/draft_schema.py")
@@ -569,17 +569,17 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
         time.sleep(1.6)
         emit({"type": "stage", "stage": "solve", "status": "done"})
         return (
-            "已完成数据抽取与求解。\n\n美国的数据分析公司包括：Palantir、Databricks、Snowflake。\n\n"
-            "数据来源：company_sample.csv（18 个实例，42 条事实）。"
+            "Data extraction and solving are complete.\n\nData analytics companies in the US include: Palantir, Databricks, and Snowflake.\n\n"
+            "Source: company_sample.csv (18 instances, 42 facts)."
         )
     emit({"type": "stage", "stage": "clarify", "status": "running"})
     time.sleep(1.4)
     emit({"type": "stage", "stage": "confirm_problem", "status": "waiting"})
     return (
-        "我对问题的理解如下，请确认：\n\n"
-        "**问题**：获取在美国经营的数据分析公司列表，包括公司名称和所属细分领域。\n\n"
-        "**求解步骤**：\n1. 构建 Company、Industry 实体及其关系\n2. 搜索并抽取符合条件的数据\n3. 返回公司名称和领域列表\n\n"
-        "回复「确认」继续，或直接说明需要修改的地方。"
+        "Here is my understanding of the question. Please confirm:\n\n"
+        "**Question**: List data analytics companies operating in the US, including company names and their sub-domains.\n\n"
+        "**Solution steps**:\n1. Build Company and Industry entities and their relations\n2. Search for and extract matching data\n3. Return the list of company names and domains\n\n"
+        "Reply \"Confirm\" to continue, or tell me what needs to change."
     )
 
 
@@ -654,7 +654,7 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=900)
             except asyncio.TimeoutError:
-                run_error = "运行超时，请重试或缩小问题范围。"
+                run_error = "The run timed out. Please retry or narrow the question."
                 break
 
             if event["type"] == "_done":
@@ -676,11 +676,11 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
                                     "stages": session["stages"]}, ensure_ascii=False)
                     )
                 else:
-                    run_error = "本轮运行没有产生回复，请重试。"
+                    run_error = "This run produced no reply. Please retry."
                 break
 
             if event["type"] == "_error":
-                run_error = "运行出现问题，请稍后重试。"
+                run_error = "Something went wrong during the run. Please retry later."
                 break
 
             if event["type"] == "stage":
