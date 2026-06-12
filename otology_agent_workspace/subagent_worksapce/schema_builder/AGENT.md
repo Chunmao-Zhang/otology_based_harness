@@ -54,6 +54,7 @@ Return only valid JSON:
 
 ## Schema Rules
 
+- Read the evidence manifest at `evidence_manifest_path` first. If it contains a `schema_plan` list, use it as the blueprint: create one class per `kind: "entity"` entry (with the listed fields) and one relation per `kind: "relation"` entry (head -> tail). Only add elements beyond the plan when the question clearly requires them.
 - Write a Python schema file as the single source of truth.
 - Write `draft_schema.py` at the canonical run path when file writing is available in the execution layer.
 - Use classes with PascalCase names.
