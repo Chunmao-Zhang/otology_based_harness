@@ -446,6 +446,36 @@ def stage_label(stage_id: str) -> str:
     return stage_id
 
 
+def extract_clarification(text: str) -> dict[str, Any] | None:
+    """Pull a structured {problem, steps} out of a clarification reply."""
+    try:
+        from harness.ontology.json_contract import extract_json_object
+
+        data = extract_json_object(text)
+        problem = data.get("problem")
+        steps = data.get("steps")
+        if isinstance(problem, str) and problem.strip() and isinstance(steps, list):
+            cleaned = [str(item).strip() for item in steps if str(item).strip()]
+            if cleaned:
+                return {"problem": problem.strip(), "steps": cleaned}
+    except Exception:
+        pass
+    problem = ""
+    steps: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.match(r"^\*?\*?(?:Question|\u95ee\u9898)\*?\*?[:\uff1a]\s*(.+)$", stripped)
+        if match and not problem:
+            problem = match.group(1).strip()
+            continue
+        match = re.match(r"^\d+[.\u3001)]\s*(.+)$", stripped)
+        if match:
+            steps.append(match.group(1).strip())
+    if problem and steps:
+        return {"problem": problem, "steps": steps}
+    return None
+
+
 def detect_gate(text: str) -> str:
     """Infer which confirmation gate the coordinator is waiting on."""
     lowered = text.lower()
@@ -602,6 +632,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     str(payload.get("content", "")),
                     list(payload.get("upload_ids", []) or []),
                 )
+            elif payload.get("type") == "confirm_problem":
+                problem = str(payload.get("problem", "")).strip()
+                steps = [str(item).strip() for item in (payload.get("steps") or []) if str(item).strip()]
+                if not problem or not steps:
+                    error_message = ui_message("system", "The problem statement and at least one step are required.", tone="error")
+                    await websocket.send_text(json.dumps({"type": "error", "message": error_message}, ensure_ascii=False))
+                    continue
+                current = STORE.get(session["id"])
+                current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
+                STORE.save(current)
+                composed = (
+                    "I confirm the clarified problem.\n\n"
+                    f"**Question**: {problem}\n\n"
+                    "**Solution steps**:\n"
+                    + "\n".join(f"{index + 1}. {step}" for index, step in enumerate(steps))
+                )
+                await handle_chat(websocket, session["id"], composed, [])
             elif payload.get("type") == "history":
                 await websocket.send_text(
                     json.dumps({"type": "history", "session": STORE.get(session["id"])}, ensure_ascii=False)
@@ -662,13 +709,21 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
                 session = STORE.get(session_id)
                 if final:
                     gate = detect_gate(final)
+                    clarification = None
                     if gate:
                         set_stage(session, gate, "waiting")
                         await websocket.send_text(json.dumps(
                             {"type": "stage", "stage": gate, "status": "waiting", "label": stage_label(gate)},
                             ensure_ascii=False,
                         ))
-                    assistant_message = ui_message("assistant", final)
+                        if gate == "confirm_problem":
+                            clarification = extract_clarification(final)
+                            if clarification:
+                                session["clarification"] = {**clarification, "status": "draft"}
+                    if clarification:
+                        assistant_message = ui_message("assistant", final, clarification=clarification)
+                    else:
+                        assistant_message = ui_message("assistant", final)
                     session["messages"].append(assistant_message)
                     STORE.save(session)
                     await websocket.send_text(

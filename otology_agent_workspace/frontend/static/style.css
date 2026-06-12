@@ -5379,3 +5379,20 @@ textarea#message-input.chat-input:focus-visible,
   padding: 0 0 0 2px;
 }
 .attach-chip-remove:hover { color: var(--accent); }
+
+/* Clarification review form (confirm-problem gate) */
+.clarify-form { margin-top: 14px; padding: 16px 18px; border-radius: 14px; background: var(--panel-strong); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08); display: flex; flex-direction: column; gap: 10px; }
+.clarify-form-head h4 { margin: 0 0 2px; font-size: 14px; color: var(--ink); }
+.clarify-form-head p { margin: 0; font-size: 12px; color: var(--ink-muted); }
+.clarify-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-top: 2px; }
+.clarify-problem { width: 100%; resize: vertical; min-height: 48px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; line-height: 1.5; }
+.clarify-problem:focus, .clarify-step-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.clarify-steps { display: flex; flex-direction: column; gap: 8px; }
+.clarify-step { display: flex; align-items: center; gap: 8px; }
+.clarify-step-no { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 14%, var(--panel)); color: var(--accent); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.clarify-step-input { flex: 1; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; }
+.clarify-step-remove { flex-shrink: 0; width: 24px; height: 24px; border: 0; border-radius: 50%; background: none; color: var(--ink-muted); font-size: 16px; line-height: 1; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.clarify-step-remove:hover { background: color-mix(in srgb, #ef4444 12%, transparent); color: #ef4444; }
+.clarify-add-step { align-self: flex-start; padding: 6px 12px; border-radius: 999px; border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--line)); background: none; color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s ease; }
+.clarify-add-step:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.clarify-form .gate-actions { margin-top: 4px; }

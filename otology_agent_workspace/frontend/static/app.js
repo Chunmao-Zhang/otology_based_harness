@@ -289,6 +289,9 @@
     if (!last || last.id !== message.id) return '';
     const waiting = (state.stages || []).find((stage) => stage.status === 'waiting');
     if (!waiting) return '';
+    if (waiting.id === 'confirm_problem' && message.clarification) {
+      return clarifyFormHtml(message.clarification);
+    }
     const schemaGate = waiting.id === 'confirm_schema';
     return `
       <div class="gate-actions">
@@ -296,6 +299,69 @@
         ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>' : ''}
       </div>
     `;
+  }
+
+  function clarifyStepRowHtml(value) {
+    return `
+      <div class="clarify-step">
+        <span class="clarify-step-no"></span>
+        <input class="clarify-step-input" type="text" value="${escapeHtml(value)}" placeholder="Describe this step">
+        <button type="button" class="clarify-step-remove" title="Remove step" aria-label="Remove step">×</button>
+      </div>
+    `;
+  }
+
+  function clarifyFormHtml(clarification) {
+    return `
+      <div class="clarify-form">
+        <div class="clarify-form-head">
+          <h4>Review &amp; edit before continuing</h4>
+          <p>Adjust the problem statement and solution steps below, then confirm.</p>
+        </div>
+        <label class="clarify-label">Problem</label>
+        <textarea class="clarify-problem" rows="2">${escapeHtml(clarification.problem || '')}</textarea>
+        <label class="clarify-label">Solution steps</label>
+        <div class="clarify-steps">${(clarification.steps || []).map(clarifyStepRowHtml).join('')}</div>
+        <button type="button" class="clarify-add-step">+ Add step</button>
+        <div class="gate-actions">
+          <button class="gate-confirm" data-action="confirm-clarification">Confirm &amp; continue</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function bindClarifyForm(form) {
+    const renumber = () => {
+      form.querySelectorAll('.clarify-step-no').forEach((badge, index) => { badge.textContent = index + 1; });
+    };
+    renumber();
+    form.querySelector('.clarify-add-step').addEventListener('click', () => {
+      const steps = form.querySelector('.clarify-steps');
+      steps.insertAdjacentHTML('beforeend', clarifyStepRowHtml(''));
+      bindClarifyRemove(form, steps.lastElementChild, renumber);
+      renumber();
+      steps.lastElementChild.querySelector('.clarify-step-input').focus();
+    });
+    form.querySelectorAll('.clarify-step').forEach((row) => bindClarifyRemove(form, row, renumber));
+    form.querySelector('[data-action="confirm-clarification"]').addEventListener('click', () => {
+      const problem = form.querySelector('.clarify-problem').value.trim();
+      const steps = Array.from(form.querySelectorAll('.clarify-step-input'))
+        .map((input) => input.value.trim())
+        .filter(Boolean);
+      if (!problem || !steps.length) {
+        alert('The problem statement and at least one step are required.');
+        return;
+      }
+      if (state.running || !state.wsReady) return;
+      state.ws.send(JSON.stringify({ type: 'confirm_problem', problem, steps }));
+    });
+  }
+
+  function bindClarifyRemove(form, row, renumber) {
+    row.querySelector('.clarify-step-remove').addEventListener('click', () => {
+      row.remove();
+      renumber();
+    });
   }
 
   function renderMessages() {
@@ -325,6 +391,7 @@
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openPanel('schema'));
     });
+    el.messages.querySelectorAll('.clarify-form').forEach(bindClarifyForm);
     if (window.Prism) window.Prism.highlightAllUnder(el.messages);
     el.messages.scrollTop = el.messages.scrollHeight;
   }
