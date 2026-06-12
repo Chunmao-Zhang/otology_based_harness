@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Ontology QA Agent</title>
+  <link rel="icon" href="/static/assets/knowcoder-logo.svg" type="image/svg+xml">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=20260612-ontology-v1">
+</head>
+<body class="light-theme" data-agent-id="ontology_coordinator">
+  <header class="navbar">
+    <div class="navbar-content">
+      <div class="logo" id="brand-home" title="返回首页">
+        <img src="/static/assets/knowcoder-logo.svg" alt="Ontology QA logo" class="logo-img">
+        <span class="logo-text-wrap">
+          <span class="logo-text">Ontology QA Agent</span>
+          <span class="logo-subtext">从问题到本体 Schema，再到可验证的答案</span>
+        </span>
+      </div>
+      <div class="nav-right">
+        <div class="status-chip" id="status-pill"><span class="status-dot"></span><span>正在检查服务</span></div>
+        <div class="model-chip" id="model-chip">Model</div>
+        <button class="icon-btn" id="history-btn" title="查看历史会话" aria-label="查看历史会话">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 1a7 7 0 1 0 6.32 4H13.2A6 6 0 1 1 8 2v2.2L11.2 1 8-2.2V1Zm.5 3.5h-1v4l3.2 1.9.5-.86-2.7-1.6V4.5Z"/></svg>
+        </button>
+        <button class="icon-btn" id="theme-toggle" title="切换主题" aria-label="切换主题">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 12.5A4.5 4.5 0 1 0 8 3.5a4.5 4.5 0 0 0 0 9Zm0 1A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11ZM8 .5a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V1A.5.5 0 0 1 8 .5Zm0 13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0v-1a.5.5 0 0 1 .5-.5ZM.5 8a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1H1A.5.5 0 0 1 .5 8Zm13 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5Z"/></svg>
+        </button>
+        <button class="nav-new-chat" id="new-chat"><span>新对话</span><strong>⌘N</strong></button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <div class="chat-container">
+      <section class="welcome-section" id="hero">
+        <div class="hero-title-row">
+          <div class="hero-graph-icon" aria-label="Ontology question answering icon">
+            <span class="hero-node">Q</span>
+            <span class="hero-edge"></span>
+            <span class="hero-node">Schema</span>
+            <span class="hero-edge"></span>
+            <span class="hero-node answer">A</span>
+          </div>
+          <h1 class="welcome-title">Ontology QA Agent</h1>
+        </div>
+        <p class="welcome-description">以本体为中心的问答智能体：澄清你的问题，结合上传文件与网络证据构建本体 Schema，经你确认后抽取数据并在专属工作区中执行代码求解，给出有依据的答案。</p>
+        <div class="quick-metrics" id="quick-metrics">
+          <div class="metric-card"><span>流程</span><strong>8 步可视化流水线</strong></div>
+          <div class="metric-card"><span>文件</span><strong id="upload-metric">0 个已上传文件</strong></div>
+        </div>
+        <button class="hero-upload-btn" id="hero-upload" type="button">
+          <span>上传文件或查看 Schema</span>
+          <small>打开本体工作台</small>
+        </button>
+      </section>
+
+      <section class="chat-messages" id="messages" aria-live="polite"></section>
+    </div>
+  </main>
+
+  <section class="input-section" id="input-section">
+    <div class="input-shell">
+      <div class="run-indicator" id="run-indicator">
+        <span></span>
+        <strong>智能体正在工作</strong>
+        <em id="run-detail"></em>
+        <button id="reset-run" type="button">重置</button>
+      </div>
+      <div class="onto-stage-strip" id="stage-strip" hidden></div>
+      <div class="input-container">
+        <div class="kb-scope-segment onto-upload-segment" id="upload-segment">
+          <div class="kb-scope-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <defs>
+                <linearGradient id="kbicon-grad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#3b82f6"/>
+                  <stop offset="100%" stop-color="#1d4ed8"/>
+                </linearGradient>
+              </defs>
+              <path d="M5 7.5L12 4l7 3.5v9L12 20l-7-3.5v-9z" fill="url(#kbicon-grad)" opacity="0.18"/>
+              <path d="M5 7.5L12 4l7 3.5v9L12 20l-7-3.5v-9z" fill="none" stroke="url(#kbicon-grad)" stroke-width="1.4" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="2" fill="url(#kbicon-grad)"/>
+              <path d="M12 10V5M12 14v5M10 12H5M14 12h5" stroke="url(#kbicon-grad)" stroke-width="1.2" stroke-linecap="round" opacity="0.55"/>
+            </svg>
+          </div>
+          <div class="kb-scope-text">
+            <span class="kb-scope-kicker">本轮文件</span>
+            <button type="button" class="kb-scope-trigger" id="upload-trigger" aria-haspopup="listbox" aria-expanded="false">
+              <span class="kb-scope-current" id="upload-current">不附带文件</span>
+              <svg class="kb-scope-caret" viewBox="0 0 10 6" width="10" height="6" aria-hidden="true"><path fill="currentColor" d="M0 0l5 6 5-6z"/></svg>
+            </button>
+          </div>
+          <div class="kb-scope-menu" id="upload-menu" role="listbox" hidden></div>
+        </div>
+        <div class="input-segment">
+          <textarea class="chat-input" id="message-input" rows="1" placeholder="向 Ontology QA Agent 提问..." style="border:0;outline:0;box-shadow:none;-webkit-appearance:none;appearance:none;"></textarea>
+          <button class="send-btn" id="send-button" aria-label="发送">
+            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1.7 1.05a.5.5 0 0 0-.69.56l1.4 4.84a.5.5 0 0 0 .4.36l5.7.95c.27.04.27.42 0 .46l-5.7.95a.5.5 0 0 0-.4.36L1.01 14.4a.5.5 0 0 0 .7.55l13.98-7a.5.5 0 0 0 0-.9L1.7 1.05Z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="ai-disclaimer">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14Zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm.93-9.41-2.29.28-.08.38.45.08c.29.07.35.18.29.47l-.74 3.47c-.2.9.1 1.32.8 1.32.55 0 1.18-.25 1.47-.6l.09-.42c-.2.18-.5.25-.69.25-.27 0-.37-.2-.3-.53l1-4.7ZM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg>
+        <span>Enter 发送 · Shift + Enter 换行 · 流程中的确认步骤会在对话里提示你</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="fab-container" id="fab-container">
+    <button class="fab-main" id="fab-main" type="button" title="打开本体工作台" aria-label="打开本体工作台" aria-controls="fab-evidence fab-schema fab-progress" aria-expanded="false">
+      <span class="fab-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3Zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3ZM1 10.5A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3Zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3Z"/></svg>
+      </span>
+      <span class="fab-copy">
+        <strong>本体工作台</strong>
+        <small>文件、Schema 与运行结果</small>
+      </span>
+      <span class="fab-caret" aria-hidden="true">⌃</span>
+    </button>
+    <button class="fab-action" id="fab-evidence" type="button" title="打开文件与证据" aria-label="打开文件与证据" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">上传</span>
+      <strong>文件与证据</strong>
+      <small>上传 CSV / TXT / MD，查看证据清单</small>
+    </button>
+    <button class="fab-action" id="fab-schema" type="button" title="打开 Schema 工作台" aria-label="打开 Schema 工作台" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">编辑</span>
+      <strong>Schema 工作台</strong>
+      <small>查看、修改并确认本体 Schema</small>
+    </button>
+    <button class="fab-action" id="fab-progress" type="button" title="打开运行与结果" aria-label="打开运行与结果" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">查看</span>
+      <strong>运行与结果</strong>
+      <small>流程进度与抽取结果摘要</small>
+    </button>
+  </div>
+
+  <aside class="activities-panel" id="activities-panel">
+    <div class="panel-header">
+      <div class="panel-tabs">
+        <button class="panel-tab active" data-tab="evidence" id="evidence-tab">文件与证据</button>
+        <button class="panel-tab" data-tab="schema" id="schema-tab">Schema 工作台</button>
+        <button class="panel-tab" data-tab="progress" id="progress-tab">运行与结果</button>
+      </div>
+      <button class="close-panel" id="close-panel" aria-label="关闭面板">×</button>
+    </div>
+    <div class="panel-body">
+      <section class="panel-section active" id="evidence-content"></section>
+      <section class="panel-section" id="schema-content"></section>
+      <section class="panel-section" id="progress-content"></section>
+    </div>
+  </aside>
+
+  <div class="history-overlay" id="history-overlay"></div>
+  <section class="history-modal" id="history-modal" aria-modal="true" role="dialog">
+    <div class="modal-header">
+      <div>
+        <span class="modal-eyebrow">会话库</span>
+        <h2>历史会话</h2>
+        <p>重新打开之前的提问，或清理已保存的对话。</p>
+      </div>
+      <div class="modal-actions">
+        <span class="history-count" id="session-count">0 条记录</span>
+        <button class="history-start" id="history-new-chat" type="button">新对话</button>
+      </div>
+      <button class="close-modal" id="close-history" aria-label="关闭历史">×</button>
+    </div>
+    <div class="history-list" id="session-list"></div>
+  </section>
+
+  <script>
+    window.STUDIO_CONFIG = {
+      agentId: "ontology_coordinator",
+      brand: "Ontology QA Agent"
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="/static/app.js?v=20260612-ontology-v1"></script>
+</body>
+</html>
