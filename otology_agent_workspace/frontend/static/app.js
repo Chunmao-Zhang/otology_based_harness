@@ -148,7 +148,7 @@
   }
 
   async function api(path, options) {
-    const response = await fetch(path, options);
+    const response = await fetch(new URL(path, window.location.origin), options);
     if (!response.ok) {
       let detail = `${response.status}`;
       try { detail = (await response.json()).detail || detail; } catch (err) { /* ignore */ }
