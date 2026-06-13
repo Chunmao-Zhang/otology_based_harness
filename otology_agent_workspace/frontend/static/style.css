@@ -111,6 +111,13 @@ input:focus-visible {
 
 .rail-toggle {
   flex: 0 0 auto;
+  color: var(--ink);
+}
+
+.rail-toggle:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  background: var(--accent-soft);
 }
 
 body:not(.rail-collapsed) .rail-toggle {
