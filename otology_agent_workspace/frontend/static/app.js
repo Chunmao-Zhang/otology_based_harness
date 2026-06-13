@@ -59,6 +59,7 @@
     schemaDirty: false,
     panelTab: 'evidence',
     isComposing: false,
+    clarificationEditing: new Set(),
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -218,6 +219,7 @@
     state.stages = [];
     state.uploads = [];
     state.selectedUploads.clear();
+    state.clarificationEditing.clear();
     state.schema = null;
     state.schemaForm = [];
     connectWs();
@@ -328,18 +330,26 @@
     const waiting = (state.stages || []).find((stage) => stage.status === 'waiting');
     if (!waiting) return '';
     if (waiting.id === 'confirm_problem' && message.clarification) {
-      return clarifyFormHtml(message.clarification);
+      if (state.clarificationEditing.has(message.id)) {
+        return clarifyFormHtml(message.clarification);
+      }
+      return `
+        <div class="gate-actions clarification-actions">
+          <button class="gate-confirm" data-action="confirm-clarification-direct" data-message-id="${escapeHtml(message.id)}">Confirm &amp; Continue</button>
+          <button class="gate-edit" data-action="edit-clarification" data-message-id="${escapeHtml(message.id)}">Edit</button>
+        </div>
+      `;
     }
     const schemaGate = waiting.id === 'confirm_schema';
     return `
       <div class="gate-actions">
-        <button class="gate-confirm" data-action="confirm">Confirm &amp; continue</button>
+        <button class="gate-confirm" data-action="confirm">Confirm &amp; Continue</button>
         ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>' : ''}
       </div>
     `;
   }
 
-  function renderClarificationCard(clarification) {
+  function renderClarificationCard(clarification, actionsHtml = '') {
     const steps = (clarification.steps || [])
       .map((step, index) => `<li><span>${index + 1}</span><p>${formatInline(step)}</p></li>`)
       .join('');
@@ -357,13 +367,16 @@
           <span>计划步骤</span>
           <ol>${steps}</ol>
         </div>
+        ${actionsHtml}
       </section>
     `;
   }
 
   function renderAssistantContent(message) {
     if (message.clarification) {
-      return `${renderClarificationCard(message.clarification)}${gateActions(message)}`;
+      const actions = gateActions(message);
+      const editing = state.clarificationEditing.has(message.id);
+      return `${renderClarificationCard(message.clarification, editing ? '' : actions)}${editing ? actions : ''}`;
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -409,10 +422,17 @@
         <div class="clarify-steps">${(clarification.steps || []).map(clarifyStepRowHtml).join('')}</div>
         <button type="button" class="clarify-add-step">+ Add step</button>
         <div class="gate-actions">
-          <button class="gate-confirm" data-action="confirm-clarification">Confirm &amp; continue</button>
+          <button class="gate-confirm" data-action="confirm-clarification">Confirm &amp; Continue</button>
         </div>
       </div>
     `;
+  }
+
+  function sendClarification(clarification) {
+    const problem = String(clarification.problem || '').trim();
+    const steps = (clarification.steps || []).map((step) => String(step || '').trim()).filter(Boolean);
+    if (!problem || !steps.length || state.running || !state.wsReady) return;
+    state.ws.send(JSON.stringify({ type: 'confirm_problem', problem, steps }));
   }
 
   function bindClarifyForm(form) {
@@ -475,6 +495,18 @@
     }).join('');
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
       button.addEventListener('click', () => sendQuickReply('Confirm'));
+    });
+    el.messages.querySelectorAll('[data-action="confirm-clarification-direct"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const message = state.messages.find((item) => item.id === button.getAttribute('data-message-id'));
+        if (message && message.clarification) sendClarification(message.clarification);
+      });
+    });
+    el.messages.querySelectorAll('[data-action="edit-clarification"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.clarificationEditing.add(button.getAttribute('data-message-id'));
+        renderMessages();
+      });
     });
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openPanel('schema'));

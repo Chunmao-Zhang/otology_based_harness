@@ -5489,6 +5489,7 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .gate-confirm,
+.gate-edit,
 .gate-open-schema,
 .onto-btn {
   font: inherit;
@@ -5509,14 +5510,21 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .gate-open-schema,
+.gate-edit,
 .onto-btn.secondary {
   background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
   color: var(--accent-strong);
 }
 
 .gate-confirm:hover,
+.gate-edit:hover,
 .gate-open-schema:hover,
 .onto-btn:hover:not(:disabled) { opacity: .88; transform: translateY(-1px); }
+
+.clarification-actions {
+  margin: 0;
+  padding: 0 18px 18px;
+}
 
 .onto-btn:disabled { opacity: .45; cursor: not-allowed; }
 
