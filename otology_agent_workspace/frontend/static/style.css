@@ -4719,7 +4719,7 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .input-shell {
-  width: min(960px, calc(100% - 36px));
+  width: min(1120px, calc(100% - 36px));
 }
 
 .input-container {
@@ -5554,13 +5554,21 @@ textarea#message-input.chat-input:focus-visible,
 .onto-stage-strip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 8px 14px;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  padding: 8px 12px;
   margin-bottom: 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--panel-strong) 94%, var(--accent-soft));
+}
+
+.onto-stage-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .onto-stage-strip[hidden] {
@@ -5570,21 +5578,22 @@ textarea#message-input.chat-input:focus-visible,
 .onto-stage-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
+  flex: 0 0 auto;
+  gap: 4px;
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--ink-muted);
   white-space: nowrap;
 }
 
-.onto-stage-chip i { font-style: normal; font-size: 10px; }
+.onto-stage-chip i { font-style: normal; font-size: 9px; }
 .onto-stage-chip.done { color: var(--success); }
 .onto-stage-chip.running { color: var(--accent-strong); }
 .onto-stage-chip.running i { animation: onto-pulse 1.2s ease-in-out infinite; }
 .onto-stage-chip.waiting { color: var(--warning); }
 
 .onto-stage-sep {
-  width: 14px;
+  width: 10px;
   height: 1px;
   background: var(--line-strong);
   flex: 0 0 auto;
