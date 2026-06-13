@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -1252,7 +1252,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         return
 
 
-async def handle_chat(websocket: WebSocket, session_id: str, content: str, upload_ids: list[str]) -> None:
+async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids: list[str]) -> None:
     content = content.strip()
     if not content:
         return
@@ -1421,6 +1421,57 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
         await websocket.send_text(json.dumps({"type": "run_done"}, ensure_ascii=False))
     except Exception:
         pass
+
+
+class HttpEventSink:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def send_text(self, text: str) -> None:
+        self.events.append(json.loads(text))
+
+
+@app.post("/api/chat/{session_id}")
+async def chat_fallback(session_id: str, request: Request):
+    payload = await request.json()
+    try:
+        session = STORE.get(session_id)
+    except HTTPException:
+        session = STORE.create()
+
+    sink = HttpEventSink()
+    payload_type = payload.get("type")
+    if payload_type == "chat":
+        await handle_chat(
+            sink,
+            session["id"],
+            str(payload.get("content", "")),
+            list(payload.get("upload_ids", []) or []),
+        )
+    elif payload_type == "confirm_problem":
+        problem = str(payload.get("problem", "")).strip()
+        steps = [str(item).strip() for item in (payload.get("steps") or []) if str(item).strip()]
+        if not problem or not steps:
+            error_message = ui_message("system", "The problem statement and at least one step are required.", tone="error")
+            sink.events.append({"type": "error", "message": error_message})
+        else:
+            current = STORE.get(session["id"])
+            set_stage(current, "confirm_problem", "done")
+            current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
+            STORE.save(current)
+            composed = (
+                "I confirm the clarified problem.\n\n"
+                f"**Question**: {problem}\n\n"
+                "**Solution steps**:\n"
+                + "\n".join(f"{index + 1}. {step}" for index, step in enumerate(steps))
+            )
+            await handle_chat(sink, session["id"], composed, [])
+    elif payload_type == "history":
+        sink.events.append({"type": "history", "session": STORE.get(session["id"])})
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported chat payload type")
+
+    return {"ok": True, "session_id": session["id"], "events": sink.events}
 
 
 def main() -> None:

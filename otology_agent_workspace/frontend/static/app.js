@@ -254,6 +254,7 @@
     state.ws = ws;
     ws.addEventListener('open', () => { state.wsReady = true; });
     ws.addEventListener('close', () => { state.wsReady = false; });
+    ws.addEventListener('error', () => { state.wsReady = false; });
     ws.addEventListener('message', (event) => {
       let payload = null;
       try { payload = JSON.parse(event.data); } catch (err) { return; }
@@ -324,11 +325,42 @@
     el.send.disabled = running;
   }
 
+  function pushClientError(message) {
+    state.messages.push({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      role: 'system',
+      content: message,
+      timestamp: new Date().toISOString(),
+    });
+    renderMessages();
+  }
+
+  async function sendViaHttp(payload) {
+    setRunning(true, 'The agent is working on your request…');
+    try {
+      const data = await api(`/api/chat/${state.sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      (data.events || []).forEach(handleWsEvent);
+    } catch (err) {
+      pushClientError(`Send failed: ${err.message}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
   function sendMessage() {
     const content = el.input.value.trim();
-    if (!content || state.running || !state.wsReady) return;
+    if (!content || state.running) return;
     const uploadIds = Array.from(state.selectedUploads);
-    state.ws.send(JSON.stringify({ type: 'chat', content, upload_ids: uploadIds }));
+    const payload = { type: 'chat', content, upload_ids: uploadIds };
+    if (state.wsReady) {
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload);
+    }
     el.input.value = '';
     state.selectedUploads.clear();
     renderAttachments();
@@ -336,8 +368,13 @@
   }
 
   function sendQuickReply(text) {
-    if (state.running || !state.wsReady) return;
-    state.ws.send(JSON.stringify({ type: 'chat', content: text, upload_ids: [] }));
+    if (state.running) return;
+    const payload = { type: 'chat', content: text, upload_ids: [] };
+    if (state.wsReady) {
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload);
+    }
   }
 
   // ── Chat rendering ──────────────────────────────────────────────────────
@@ -462,8 +499,13 @@
   function sendClarification(clarification) {
     const problem = String(clarification.problem || '').trim();
     const steps = (clarification.steps || []).map((step) => String(step || '').trim()).filter(Boolean);
-    if (!problem || !steps.length || state.running || !state.wsReady) return;
-    state.ws.send(JSON.stringify({ type: 'confirm_problem', problem, steps }));
+    if (!problem || !steps.length || state.running) return;
+    const payload = { type: 'confirm_problem', problem, steps };
+    if (state.wsReady) {
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload);
+    }
   }
 
   function renumberClarifyModalSteps() {
@@ -538,8 +580,7 @@
         alert('The problem statement and at least one step are required.');
         return;
       }
-      if (state.running || !state.wsReady) return;
-      state.ws.send(JSON.stringify({ type: 'confirm_problem', problem, steps }));
+      sendClarification({ problem, steps });
     });
   }
 
