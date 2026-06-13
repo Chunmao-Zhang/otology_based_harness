@@ -759,6 +759,41 @@
     const output = card.status === 'waiting'
       ? (card.thinking || 'Waiting for your confirmation.')
       : (card.thinking || '');
+    const detailHtml = `
+      <div class="run-tool-pane">
+        <span class="run-section-label">Tool activity</span>
+        ${renderTaskToolActivity(card)}
+      </div>
+      <div class="run-reasoning-pane">
+        <span class="run-section-label">Model thinking</span>
+        <div class="run-reasoning-output">${escapeHtml(sanitizeDisplayText(thinking))}</div>
+      </div>
+      <div class="run-model-pane">
+        <span class="run-section-label">Model output</span>
+        <div class="run-model-output">${output ? formatMarkdown(output) : '<span class="live-placeholder">Waiting for model output…</span>'}</div>
+      </div>
+    `;
+    if (isDone) {
+      return `
+        <section class="task-node done ${expanded ? 'expanded' : 'folded'}">
+          <div class="run-card ontology-task-card complete">
+            <div class="run-card-head completed-task-head">
+              <div class="task-node-title">
+                <span class="run-check">✓</span>
+                <span>${escapeHtml(card.title)}</span>
+              </div>
+              <div class="task-node-actions">
+                <span class="run-count">${toolCount} tool updates</span>
+                <button class="task-toggle-button" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
+                  ${expanded ? 'Hidden' : 'Open'}
+                </button>
+              </div>
+            </div>
+            ${expanded ? detailHtml : ''}
+          </div>
+        </section>
+      `;
+    }
     if (!expanded) {
       return `
         <section class="task-node ${escapeHtml(card.status)} folded">
@@ -776,22 +811,11 @@
           <div class="run-card-head">
             <button class="task-node-title" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="true">
               <span class="${card.status === 'done' ? 'run-check' : 'run-pulse'}">${card.status === 'done' ? '✓' : ''}</span>
-              <span>${card.status === 'done' ? 'Task complete' : card.status === 'waiting' ? 'Waiting for confirmation' : 'Agent is working'}</span>
+              <span>${card.status === 'waiting' ? 'Waiting for confirmation' : 'Agent is working'}</span>
             </button>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
-          <div class="run-tool-pane">
-            <span class="run-section-label">Tool activity</span>
-            ${renderTaskToolActivity(card)}
-          </div>
-          <div class="run-reasoning-pane">
-            <span class="run-section-label">Model thinking</span>
-            <div class="run-reasoning-output">${escapeHtml(sanitizeDisplayText(thinking))}</div>
-          </div>
-          <div class="run-model-pane">
-            <span class="run-section-label">Model output</span>
-            <div class="run-model-output">${output ? formatMarkdown(output) : '<span class="live-placeholder">Waiting for model output…</span>'}</div>
-          </div>
+          ${detailHtml}
         </div>
       </section>
     `;

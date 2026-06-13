@@ -5706,6 +5706,44 @@ textarea#message-input.chat-input:focus-visible,
   padding: 0;
 }
 
+.task-node-title:not(button) {
+  cursor: default;
+}
+
+.task-node-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.task-toggle-button {
+  min-width: 70px;
+  min-height: 30px;
+  padding: 6px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform .15s ease, opacity .15s ease;
+}
+
+.task-toggle-button:hover {
+  opacity: .88;
+  transform: translateY(-1px);
+}
+
+.completed-task-head {
+  min-height: 56px;
+}
+
+.task-node.folded .run-card.complete .run-card-head {
+  border-bottom: 0;
+}
+
 .task-tool-card {
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
