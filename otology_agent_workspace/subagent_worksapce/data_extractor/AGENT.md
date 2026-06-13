@@ -40,7 +40,12 @@ exactly and rewrite `instances.json` to match the listed `required_concepts`.
    `primitive_fields`/`relation_fields` from `schema_outline` verbatim as the
    JSON keys — do not rename, translate, or invent keys.
 3. Write it to the run's `data/instances.json` with `write_file` (use the
-   `instances_path` from the input when provided).
+   `instances_path` from the input when provided). Write the complete, final
+   collection to that exact path in a single `write_file` call. Do NOT create
+   alternate or temporary instance files such as `instances_final.json`,
+   `instances_new.json`, or `*_check.json`, and never overwrite
+   `data/instances.json` with empty lists. The last content at
+   `data/instances.json` must contain every extracted instance.
 4. Return the output JSON below. The harness/backend derives `facts.csv`,
    `relations.csv`, and `extraction_report.json` from your `instances.json` and
    the confirmed schema, so you only write `instances.json`.

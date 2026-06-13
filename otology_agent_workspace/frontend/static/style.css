@@ -5803,6 +5803,65 @@ textarea#message-input.chat-input:focus-visible,
   line-height: 1.55;
 }
 
+/* Tool activity step list (redesigned) */
+.tool-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.tool-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-strong);
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+  transition: border-color .2s ease, background .2s ease;
+}
+
+.tool-step.active {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--line));
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 8%);
+  color: var(--ink);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, .05);
+}
+
+.tool-step-index {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+}
+
+.tool-step.active .tool-step-index {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.tool-step-text {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.tool-step .tool-dots {
+  margin-top: 7px;
+}
+
 .stage-card-list {
   width: 100%;
   display: grid;

@@ -909,6 +909,34 @@ def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
     return final_content
 
 
+def _accumulate_stream(chunk: Any, thinking_buf: str, output_buf: str) -> tuple[str, str]:
+    """Fold one streamed model chunk into the live thinking/output buffers.
+
+    DeepSeek thinking-mode streams incremental ``reasoning_content`` deltas on
+    ``additional_kwargs`` (append) and the answer text on ``chunk.content``. The
+    latter may arrive either as incremental deltas or as a cumulative snapshot,
+    so we detect which and either append or replace to avoid duplication.
+    """
+    kwargs = getattr(chunk, "additional_kwargs", None) or {}
+    if isinstance(kwargs, dict):
+        reasoning_inc = kwargs.get("reasoning_content")
+        if isinstance(reasoning_inc, str) and reasoning_inc:
+            thinking_buf += reasoning_inc
+        content_kw = kwargs.get("content")
+        if isinstance(content_kw, str) and content_kw:
+            output_buf += content_kw
+            return thinking_buf, output_buf
+    text = getattr(chunk, "content", "")
+    if isinstance(text, list):
+        text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+    if isinstance(text, str) and text:
+        if output_buf and text.startswith(output_buf):
+            output_buf = text  # cumulative snapshot
+        else:
+            output_buf += text  # incremental delta
+    return thinking_buf, output_buf
+
+
 def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit) -> str:
     from langchain_core.messages import HumanMessage
 
@@ -925,17 +953,51 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
     emit({"type": "stage", "stage": "clarify", "status": "running"})
 
     final_content = ""
-    config = {"configurable": {"thread_id": f"{thread_id}:clarify" or "clarify"}}
+    config = {
+        "configurable": {"thread_id": f"{thread_id}:clarify" or "clarify"},
+        "recursion_limit": 120,
+    }
+    thinking_buf = ""
+    output_buf = ""
+    last_step_key: str | None = None
+    last_emit_at = 0.0
+    last_emit_len = 0
+
+    def push_stream(force: bool = False) -> None:
+        nonlocal last_emit_at, last_emit_len
+        now = time.monotonic()
+        size = len(thinking_buf) + len(output_buf)
+        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
+            return
+        last_emit_at = now
+        last_emit_len = size
+        emit({"type": "stream", "stage": "clarify", "thinking": thinking_buf, "output": output_buf})
+
     for item in agent.stream(
         {"messages": [HumanMessage(content=payload)]},
         config=config,
-        stream_mode=["values"],
+        stream_mode=["messages", "values"],
         subgraphs=True,
     ):
         if not isinstance(item, tuple) or len(item) != 3:
             continue
-        namespace, _mode, data = item
-        if namespace != ():
+        namespace, mode, data = item
+
+        if mode == "messages":
+            chunk, meta = data
+            if meta.get("langgraph_node") != "model":
+                continue
+            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
+            if step_key != last_step_key:
+                last_step_key = step_key
+                thinking_buf = ""
+                output_buf = ""
+                last_emit_len = 0
+            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
+            push_stream()
+            continue
+
+        if mode != "values" or namespace != ():
             continue
         messages = data.get("messages", []) if isinstance(data, dict) else []
         if not messages:
@@ -948,6 +1010,7 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
             content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
         if content:
             final_content = content
+            push_stream(force=True)
             emit({"type": "activity", "message": model_activity("clarify", content)})
     return final_content
 
@@ -968,7 +1031,7 @@ def run_subagent_json(
     thread_id: str,
     run_dir: Path,
     emit,
-    max_tool_calls: int = 18,
+    max_tool_calls: int = 48,
     stage_id: str = "",
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
@@ -983,23 +1046,72 @@ def run_subagent_json(
     emitted_model_output = ""
     emitted_tools: set[str] = set()
     tool_call_count = 0
-    config = {"configurable": {"thread_id": f"{thread_id}:{agent_id}"}}
+    config = {
+        "configurable": {"thread_id": f"{thread_id}:{agent_id}"},
+        "recursion_limit": 120,
+    }
+
+    # Live token streaming state (per model turn).
+    thinking_buf = ""
+    output_buf = ""
+    last_step_key: str | None = None
+    last_emit_at = 0.0
+    last_emit_len = 0
+
+    def push_stream(force: bool = False) -> None:
+        nonlocal last_emit_at, last_emit_len
+        if not stage_id:
+            return
+        now = time.monotonic()
+        size = len(thinking_buf) + len(output_buf)
+        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
+            return
+        last_emit_at = now
+        last_emit_len = size
+        emit({
+            "type": "stream",
+            "stage": stage_id,
+            "thinking": thinking_buf,
+            "output": output_buf,
+        })
+
     for item in agent.stream(
         {"messages": [HumanMessage(content=json.dumps({
             **payload,
             "_ui_output_contract": USER_VISIBLE_OUTPUT_CONTRACT,
         }, ensure_ascii=False))]},
         config=config,
-        stream_mode=["values"],
+        stream_mode=["messages", "values"],
         subgraphs=True,
     ):
         if not isinstance(item, tuple) or len(item) != 3:
             continue
-        _namespace, _mode, data = item
+        namespace, mode, data = item
+
+        if mode == "messages":
+            chunk, meta = data
+            if meta.get("langgraph_node") != "model":
+                continue
+            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
+            if step_key != last_step_key:
+                # New model turn: reset the live buffers so the card shows the
+                # reasoning/output of the step that is currently running.
+                last_step_key = step_key
+                thinking_buf = ""
+                output_buf = ""
+                last_emit_len = 0
+            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
+            push_stream()
+            continue
+
+        if mode != "values":
+            continue
         messages = data.get("messages", []) if isinstance(data, dict) else []
         if not messages:
             continue
         last = messages[-1]
+        if getattr(last, "type", "") in ("ai", "tool"):
+            push_stream(force=True)
         for call in getattr(last, "tool_calls", None) or []:
             tool_name = str(call.get("name", ""))
             tool_call_count += 1
@@ -1170,25 +1282,42 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
     vrun = vrun_for(run_dir)
     manifest_vpath = f"{vrun}/intermediate/evidence_manifest.json"
 
-    emit({"type": "stage", "stage": "schema_build", "status": "running"})
-    builder_payload = run_subagent_json(
-        "schema_builder",
-        {
-            "question": question,
-            "sources": evidence.get("sources", []),
-            "evidence_manifest_path": manifest_vpath,
-        },
-        session["thread_id"],
-        run_dir,
-        emit,
-        stage_id="schema_build",
-    )
     draft_path = run_dir / "concepts" / "draft_schema.py"
-    schema_text = builder_payload.get("schema_text")
-    if isinstance(schema_text, str) and schema_text.strip():
-        result = write_draft_schema(schema_text, draft_path)
-        if not result.get("valid", False):
-            return "Schema construction failed validation; please retry."
+    builder_base = {
+        "question": question,
+        "sources": evidence.get("sources", []),
+        "evidence_manifest_path": manifest_vpath,
+    }
+
+    emit({"type": "stage", "stage": "schema_build", "status": "running"})
+    # The schema builder must actually write concepts/draft_schema.py via the
+    # execution layer; it occasionally returns without doing so, so retry once
+    # with an explicit instruction before giving up.
+    builder_payload: dict[str, Any] = {}
+    for attempt in range(2):
+        payload = dict(builder_base)
+        if attempt > 0:
+            payload["correction"] = {
+                "message": (
+                    "You did not produce concepts/draft_schema.py. Write the schema "
+                    "to that path using write_file, then call schema_validator."
+                ),
+            }
+        builder_payload = run_subagent_json(
+            "schema_builder",
+            payload,
+            session["thread_id"],
+            run_dir,
+            emit,
+            stage_id="schema_build",
+        )
+        schema_text = builder_payload.get("schema_text")
+        if isinstance(schema_text, str) and schema_text.strip() and not draft_path.exists():
+            result = write_draft_schema(schema_text, draft_path)
+            if not result.get("valid", False):
+                return "Schema construction failed validation; please retry."
+        if draft_path.exists():
+            break
     if not draft_path.exists():
         return "Schema construction did not produce a draft schema; please retry."
 
@@ -1207,6 +1336,39 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
     return schema_confirmation_message(run_dir, judgment, evidence)
 
 
+def _instance_rows(data: Any) -> int:
+    if not isinstance(data, dict):
+        return 0
+    return sum(len(v) for v in data.values() if isinstance(v, list))
+
+
+def recover_instances_from_siblings(instances_path: Path) -> dict[str, Any] | None:
+    """The extractor sometimes writes real data to a scratch file (e.g.
+    instances_final.json) and leaves data/instances.json empty. Promote the most
+    populated sibling instances*.json back to the canonical instances.json."""
+    data_dir = instances_path.parent
+    if not data_dir.exists():
+        return None
+    best: dict[str, Any] | None = None
+    best_rows = 0
+    for path in sorted(data_dir.glob("instances*.json")):
+        if path.name == instances_path.name:
+            continue
+        try:
+            candidate = read_json(path)
+        except Exception:
+            continue
+        rows = _instance_rows(candidate)
+        if isinstance(candidate, dict) and rows > best_rows:
+            best, best_rows = candidate, rows
+    if best is not None and best_rows > 0:
+        instances_path.write_text(
+            json.dumps(best, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return best
+    return None
+
+
 def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
     run_dir = session_run_dir(session)
     draft_path = run_dir / "concepts" / "draft_schema.py"
@@ -1221,25 +1383,57 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
     manifest_vpath = f"{vrun}/intermediate/evidence_manifest.json"
     instances_path = run_dir / "data" / "instances.json"
 
+    extract_payload = {
+        "schema_path": f"{vrun}/concepts/confirmed_schema.py",
+        "instances_path": f"{vrun}/data/instances.json",
+        "schema_outline": schema_outline(confirmed_path),
+        "sources": evidence.get("sources", []),
+        "evidence_manifest_path": manifest_vpath,
+    }
+
     emit({"type": "stage", "stage": "extract", "status": "running"})
     run_subagent_json(
         "data_extractor",
-        {
-            "schema_path": f"{vrun}/concepts/confirmed_schema.py",
-            "instances_path": f"{vrun}/data/instances.json",
-            "schema_outline": schema_outline(confirmed_path),
-            "sources": evidence.get("sources", []),
-            "evidence_manifest_path": manifest_vpath,
-        },
+        extract_payload,
         session["thread_id"],
         run_dir,
         emit,
+        max_tool_calls=48,
         stage_id="extract",
     )
-    if not instances_path.exists():
+    # The extractor is the most tool-heavy step; retry once if it produced no
+    # instances or instances that do not conform to the confirmed schema.
+    instances = read_json(instances_path) if instances_path.exists() else None
+    if _instance_rows(instances) == 0:
+        instances = recover_instances_from_siblings(instances_path) or instances
+    validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
+    if not instances or _instance_rows(instances) == 0 or not validation.get("ok"):
+        correction = dict(extract_payload)
+        correction["correction"] = {
+            "message": (
+                "Your previous attempt did not produce a valid, populated "
+                "data/instances.json. Write every extracted instance to exactly "
+                "data/instances.json (do NOT use alternate files like "
+                "instances_final.json). Use ONLY the confirmed schema's exact entity "
+                "class names as top-level keys and ONLY their declared fields."
+            ),
+            "required_concepts": validation.get("schema_concepts", []),
+        }
+        run_subagent_json(
+            "data_extractor",
+            correction,
+            session["thread_id"],
+            run_dir,
+            emit,
+            max_tool_calls=48,
+            stage_id="extract",
+        )
+        instances = read_json(instances_path) if instances_path.exists() else None
+        if _instance_rows(instances) == 0:
+            instances = recover_instances_from_siblings(instances_path) or instances
+        validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
+    if not instances or _instance_rows(instances) == 0:
         return "Data extraction did not produce instances; please retry."
-    instances = read_json(instances_path)
-    validation = validate_instances(instances, confirmed_path)
     if not validation.get("ok"):
         return "Extracted data did not conform to the confirmed schema; please retry."
     extraction = persist_extraction(instances, confirmed_path, run_dir)
@@ -1264,6 +1458,7 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         session["thread_id"],
         run_dir,
         emit,
+        max_tool_calls=48,
         stage_id="solve",
     )
     solver = read_solver_result(run_dir)
@@ -1484,6 +1679,9 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                 final = run_real_agent(agent_input, session["thread_id"], session_run_dir(session), emit)
             emit({"type": "_done", "final": final})
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a friendly error.
+            import traceback
+            traceback.print_exc()
+            sys.stderr.flush()
             emit({"type": "_error", "error": f"{type(exc).__name__}: {exc}"})
 
     future = loop.run_in_executor(EXECUTOR, run_agent_thread)
@@ -1546,6 +1744,17 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
             if event["type"] == "_error":
                 run_error = "Something went wrong during the run. Please retry later."
                 break
+
+            if event["type"] == "stream":
+                # Live token stream for the active stage. Ephemeral: forwarded to
+                # the client for the live card but not persisted to history.
+                await websocket.send_text(json.dumps({
+                    "type": "stream",
+                    "stage": event.get("stage", ""),
+                    "thinking": redact_paths(event.get("thinking", "")),
+                    "output": redact_paths(event.get("output", "")),
+                }, ensure_ascii=False))
+                continue
 
             if event["type"] == "activity":
                 session = STORE.get(session_id)
