@@ -78,11 +78,25 @@ def _canonical_relative(value: str) -> str:
     return text
 
 
+_VIRTUAL_ROOTS = (
+    "runs/ontology_workspace_runs/",
+    "runs/harness_conversation_logs/",
+    "otology_agent_workspace/",
+    "test_data/ontology/",
+    "evals/ontology/",
+)
+
+
 def resolve_path(value: str | Path) -> Path:
     text = str(value)
     path = Path(text)
     canonical_relative = _canonical_relative(text)
     if canonical_relative != text.lstrip("/"):
+        return harness_root() / canonical_relative
+    # Absolute paths that point at the harness virtual layout (e.g.
+    # "/runs/ontology_workspace_runs/<run_id>/...") are root-relative, matching the
+    # write_file/execute_code virtual-path convention. Resolve them under the root.
+    if path.is_absolute() and canonical_relative.startswith(_VIRTUAL_ROOTS):
         return harness_root() / canonical_relative
     if path.is_absolute() and not text.startswith("/workspaces/"):
         return path

@@ -39,9 +39,19 @@ Return only valid JSON:
     }
   ],
   "needs_web_search": false,
-  "evidence_manifest_path": "..."
+  "schema_plan": [
+    {"kind": "entity", "name": "<EntityName>", "source_id": "<source_id>", "fields": ["<field1>", "<field2>"]},
+    {"kind": "relation", "name": "<relation_name>", "head": "<HeadEntity>", "tail": "<TailEntity>", "source_id": "<source_id>"}
+  ]
 }
 ```
+
+`schema_plan` must mirror your `[plan]` todos one-to-one. The harness/backend
+persists the evidence manifest (question, sources, needs_web_search, handler,
+schema_plan) and the web evidence files that `web_search` already saved, so you
+do not write the manifest file yourself. Derive `schema_plan` from the question
+and the evidence you actually collected; never reuse an unrelated example
+domain. Entity and relation names must be specific to the user's question.
 
 ## Planning Contract (`write_todos`)
 
@@ -96,19 +106,13 @@ Every `web_search` result you keep must be persisted so later stages can reuse i
 - Register each saved result in the manifest `sources` list as `{"source_id": "web_001", "source_kind": "web", "url": "...", "title": "...", "evidence_path": "...", "reason": "..."}`.
 - Use sequential ids `web_001`, `web_002`, ... Discarded search results must not be saved or registered.
 
-## File Rules
+## Manifest Persistence
 
-- Write evidence manifests under `runs/ontology_workspace_runs/<run_id>/intermediate/evidence_manifest.json` when a run id is known.
-- If no run id is known, use `runs/ontology_workspace_runs/manual/intermediate/evidence_manifest.json`.
-- Include `handler: "schema_builder"` in the manifest.
-- Include a `schema_plan` list in the manifest mirroring the `[plan]` todos, one entry per todo:
-
-```json
-"schema_plan": [
-  {"kind": "entity", "name": "Company", "source_id": "company_sample.csv", "fields": ["name", "country"]},
-  {"kind": "relation", "name": "operates_in_industry", "head": "Company", "tail": "Industry", "source_id": "company_sample.csv"}
-]
-```
+The harness/backend writes `evidence_manifest.json` under the current run's
+`intermediate/` directory from the JSON you return (it adds `question` and
+`handler: "schema_builder"` automatically and merges the web evidence already
+persisted by `web_search`). Your responsibility is to return accurate `sources`,
+`needs_web_search`, and a `schema_plan` that matches your `[plan]` todos.
 
 ## Boundaries
 

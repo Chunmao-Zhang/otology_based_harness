@@ -40,11 +40,16 @@ Return only valid JSON:
 
 ```json
 {
-  "schema_path": "runs/ontology_workspace_runs/<run_id>/concepts/draft_schema.py",
+  "schema_text": "from typing import List, Optional\n\nclass ...",
   "valid": true,
   "errors": []
 }
 ```
+
+`schema_text` must be the full Python schema source. The harness/backend writes
+it to `concepts/draft_schema.py` and revalidates, so you do not need a
+file-writing tool. `valid`/`errors` must reflect the latest `schema_validator`
+result on that exact text.
 
 ## Allowed Tools
 
@@ -55,15 +60,15 @@ Return only valid JSON:
 ## Schema Rules
 
 - Read the evidence manifest at `evidence_manifest_path` first. If it contains a `schema_plan` list, use it as the blueprint: create one class per `kind: "entity"` entry (with the listed fields) and one relation per `kind: "relation"` entry (head -> tail). Only add elements beyond the plan when the question clearly requires them.
-- Write a Python schema file as the single source of truth.
-- Write `draft_schema.py` at the canonical run path when file writing is available in the execution layer.
+- Produce the schema as Python source returned in `schema_text`; it is the single source of truth.
+- The schema must be specific to the confirmed question. Do not emit a generic Company/Industry schema unless the question is actually about that domain.
 - Use classes with PascalCase names.
 - Add `# entity_type: <type>` comments on class lines.
 - Every class must include `_id: str` or `_id: int`.
 - Primitive fields use `str`, `int`, `float`, `bool`, or `Optional[...]`.
 - Forward relations use `List["TargetClass"]` or `Optional["TargetClass"]`.
 - Reverse relations use `List["SourceClass"]  # reverse`.
-- Always call `schema_validator` after writing.
+- Always call `schema_validator` on your `schema_text` before returning.
 - If validation fails, repair once and validate again.
 
 ## Cost Rules

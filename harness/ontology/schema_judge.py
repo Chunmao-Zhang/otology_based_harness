@@ -1,4 +1,10 @@
-"""Deterministic schema judging helpers for contract tests."""
+"""Mechanical schema checks supporting the schema_judger agent.
+
+Answerability is decided semantically by the `schema_judger` LLM subagent. This
+module only provides a domain-agnostic mechanical check (does the schema parse,
+how many entities/relations does it define) that the agent and the backend can
+use as a guardrail. It contains no question-specific heuristics.
+"""
 
 from __future__ import annotations
 
@@ -8,43 +14,21 @@ from typing import Any
 from harness.ontology.schema_utils import parse_schema, read_schema_text
 
 
-def judge_schema(question: str, schema_text: str | None = None, schema_path: str | Path | None = None) -> dict[str, Any]:
+def mechanical_schema_check(
+    schema_text: str | None = None,
+    schema_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Return a domain-agnostic structural report for a schema."""
     text = read_schema_text(schema_text=schema_text, schema_path=schema_path)
     parsed = parse_schema(text)
-    if not parsed.valid:
-        return {
-            "answerable": False,
-            "coverage_score": 0.0,
-            "missing_requirements": parsed.errors,
-            "recommended_action": "fix_schema",
-        }
-
-    class_map = {item.name: item for item in parsed.classes}
-    missing: list[str] = []
-
-    company = class_map.get("Company")
-    if company is None:
-        missing.append("缺少 Company 实体，无法表达答案对象")
-    else:
-        field_names = {field.name for field in company.fields}
-        relation_targets = {field.target for field in company.fields if field.kind == "relation"}
-        if _question_needs_country(question) and "country" not in field_names and "Country" not in relation_targets:
-            missing.append("Company 缺少 country 字段或 Country 关系，无法过滤美国公司")
-        if _question_needs_industry(question) and "industry" not in field_names and "Industry" not in relation_targets:
-            missing.append("Company 缺少 industry 字段或 Industry 关系，无法表达数据分析领域")
-
-    score = 1.0 if not missing else max(0.1, 1.0 - 0.3 * len(missing))
+    entity_names = [c.name for c in parsed.classes]
+    relation_count = sum(
+        1 for c in parsed.classes for f in c.fields if f.kind == "relation" and not f.reverse
+    )
     return {
-        "answerable": not missing,
-        "coverage_score": round(score, 2),
-        "missing_requirements": missing,
-        "recommended_action": "confirm_schema" if not missing else "patch_schema",
+        "valid": parsed.valid,
+        "errors": parsed.errors,
+        "entities": entity_names,
+        "entity_count": len(entity_names),
+        "relation_count": relation_count,
     }
-
-
-def _question_needs_country(question: str) -> bool:
-    return any(token in question.lower() for token in ["美国", "united states", " u.s.", " us "])
-
-
-def _question_needs_industry(question: str) -> bool:
-    return any(token in question.lower() for token in ["数据分析", "analytics", "data analysis", "行业", "industry"])
