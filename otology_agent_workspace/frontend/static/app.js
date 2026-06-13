@@ -527,6 +527,8 @@
     const content = String(message.content || '');
     return content.includes('Schema path:')
       || content.includes('Draft schema')
+      || content.includes('The draft schema is ready')
+      || content.includes('Judgment:')
       || content.includes('**Relation Schema**')
       || content.includes('**Entity Definitions**');
   }
@@ -563,15 +565,31 @@
     return `
       <div class="schema-preview-card">
         <h4>Entity Definitions</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table">
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
           <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
           <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
         <h4>Relation Schema</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table">
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
           <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
           <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
         </table></div>
+      </div>
+    `;
+  }
+
+  function schemaReviewActionsHtml() {
+    if (state.running) return '';
+    const waiting = (state.stages || []).find((stage) => stage.id === 'confirm_schema' && stage.status === 'waiting');
+    const draftSchema = state.schema && state.schema.status === 'draft';
+    if (!waiting && !draftSchema) return '';
+    return `
+      <div class="gate-actions schema-review-actions">
+        <button class="gate-confirm" data-action="confirm">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M13.78 3.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 8.28a.75.75 0 1 1 1.06-1.06L6 9.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+          <span>Confirm &amp; Continue</span>
+        </button>
+        <button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>
       </div>
     `;
   }
@@ -582,7 +600,7 @@
       return renderClarificationCard(message.clarification, actions);
     }
     if (isSchemaReviewMessage(message)) {
-      return `${schemaPreviewTablesHtml()}${gateActions(message)}`;
+      return `${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -1124,12 +1142,12 @@
         <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
         <p class="onto-section-hint">${editable ? 'Edit entity and relation names directly, apply changes, then confirm.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
         <h4 class="onto-subhead">Entity Definitions</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table">
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
           <thead><tr><th>Entity</th><th>Entity Type</th><th>Data Type</th></tr></thead>
           <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
         <h4 class="onto-subhead">Schema Table</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table">
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
           <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
           <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
         </table></div>

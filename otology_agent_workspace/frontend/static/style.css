@@ -5231,15 +5231,20 @@ textarea#message-input.chat-input:focus-visible,
 
 .md-table-wrap {
   overflow-x: auto;
+  overflow-y: hidden;
   margin: 10px 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
 }
 
 .md-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: auto;
 }
 
 .md-table th,
@@ -5248,6 +5253,10 @@ textarea#message-input.chat-input:focus-visible,
   text-align: left;
   border-bottom: 1px solid var(--line);
   color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 116px;
 }
 
 .md-table th {
@@ -5257,6 +5266,10 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .md-table tbody tr:last-child td { border-bottom: 0; }
+
+.schema-relation-table {
+  min-width: 980px;
+}
 
 .bubble h1,
 .bubble h2,
