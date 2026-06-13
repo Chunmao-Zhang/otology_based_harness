@@ -6948,7 +6948,7 @@ body.modal-open { overflow: hidden; }
   white-space: pre-wrap;
 }
 
-/* ── Completed run group (earlier phases) ────────────────────────────── */
+/* ── Completed run group (earlier phases) → timeline ─────────────────── */
 .stage-pipeline-message.collapsed-group,
 .stage-pipeline-message.expanded-group {
   display: block;
@@ -6963,13 +6963,12 @@ body.modal-open { overflow: hidden; }
 
 .stage-group-bar {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 10px;
+  flex-direction: column;
+  gap: 10px;
   width: 100%;
-  padding: 9px 14px;
+  padding: 11px 16px 12px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--panel) 94%, transparent);
   transition: background .15s ease, border-color .15s ease;
 }
@@ -6979,8 +6978,11 @@ body.modal-open { overflow: hidden; }
   border-color: color-mix(in srgb, var(--success) 24%, var(--line));
 }
 
-.expanded-group .stage-group-bar {
-  border-radius: var(--radius-md);
+.stage-group-bar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .stage-group-summary-title {
@@ -6999,30 +7001,145 @@ body.modal-open { overflow: hidden; }
   font-size: 10px;
 }
 
-.stage-group-chips {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
 .stage-group-toggle {
-  margin-left: auto;
+  margin-left: 0;
   min-width: 0;
   min-height: 26px;
   padding: 4px 12px;
   font-size: 11.5px;
 }
 
-.stage-done-chip {
-  display: inline-flex;
+/* Horizontal step timeline */
+.run-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 2px 4px 0;
+  display: flex;
+  align-items: flex-start;
+}
+
+.run-timeline-step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 2px 9px;
+  text-align: center;
+}
+
+/* connector segment from the previous node's centre to this node's centre */
+.run-timeline-line {
+  position: absolute;
+  top: 10px;
+  left: -50%;
+  width: 100%;
+  height: 2px;
   border-radius: 999px;
+  background: var(--line);
+  transform-origin: left center;
+  z-index: 0;
+}
+
+.run-timeline-step:first-child .run-timeline-line {
+  display: none;
+}
+
+.run-timeline-step.done .run-timeline-line {
+  background: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+
+.run-timeline-dot {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 999px;
+  border: 2px solid var(--line);
+  background: var(--panel-strong, #fff);
+  color: var(--ink-muted);
   font-size: 11px;
-  font-weight: 650;
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 11%, transparent);
+  font-weight: 800;
+  line-height: 1;
+}
+
+.run-timeline-step.done .run-timeline-dot {
+  border-color: transparent;
+  background: var(--success);
+  color: #fff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--success) 28%, transparent);
+}
+
+.run-timeline-step.running .run-timeline-dot {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  animation: timelineDotPulse 1.5s ease-out infinite;
+}
+
+.run-timeline-label {
+  margin-top: 7px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink-soft);
+}
+
+.run-timeline-step.done .run-timeline-label {
+  color: var(--ink);
+}
+
+.run-timeline-step.pending .run-timeline-label {
+  color: var(--ink-muted);
+}
+
+/* One-time "switch" reveal: nodes pop in and connectors fill, staggered. */
+.run-timeline.revealing .run-timeline-dot {
+  animation: timelineDotPop .42s cubic-bezier(.34, 1.56, .64, 1) both;
+  animation-delay: calc(var(--ti, 0) * 90ms);
+}
+
+.run-timeline.revealing .run-timeline-line {
+  transform: scaleX(0);
+  animation: timelineLineGrow .34s ease both;
+  animation-delay: calc(var(--ti, 0) * 90ms - 40ms);
+}
+
+.run-timeline.revealing .run-timeline-label {
+  animation: timelineLabelIn .4s ease both;
+  animation-delay: calc(var(--ti, 0) * 90ms + 60ms);
+}
+
+@keyframes timelineDotPop {
+  0% { transform: scale(.35); opacity: 0; }
+  60% { transform: scale(1.14); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes timelineLineGrow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes timelineLabelIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes timelineDotPulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
+  70% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-timeline.revealing .run-timeline-dot,
+  .run-timeline.revealing .run-timeline-line,
+  .run-timeline.revealing .run-timeline-label {
+    animation: none;
+  }
+  .run-timeline.revealing .run-timeline-line { transform: scaleX(1); }
 }

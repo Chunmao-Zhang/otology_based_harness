@@ -72,6 +72,7 @@
     activeClarificationMessageId: '',
     expandedStageCards: new Set(),
     expandedGroups: new Set(),
+    revealedGroups: new Set(),
     forceScroll: false,
     liveStream: {},
     toolKeys: {},
@@ -946,6 +947,26 @@
     `;
   }
 
+  // Horizontal timeline summarising a finished run as a connected line of step
+  // nodes. `reveal` triggers the one-time staggered "switch" animation (each
+  // node pops in and the connector segment fills) — it is gated by the caller
+  // so it plays exactly once per group and never replays on re-render.
+  function renderRunTimeline(cards, isLatest, reveal) {
+    const nodes = cards.map((card, idx) => {
+      const status = resolveCardStatus(card, isLatest);
+      const cls = status === 'done' ? 'done' : (status === 'running' ? 'running' : (status === 'waiting' ? 'waiting' : 'pending'));
+      const glyph = status === 'done' ? '✓' : (status === 'running' || status === 'waiting' ? '' : String(idx + 1));
+      const style = reveal ? ` style="--ti:${idx}"` : '';
+      return `
+        <li class="run-timeline-step ${cls}"${style}>
+          <span class="run-timeline-line" aria-hidden="true"></span>
+          <span class="run-timeline-dot">${glyph}</span>
+          <span class="run-timeline-label">${escapeHtml(sanitizeDisplayText(card.title || 'Step'))}</span>
+        </li>`;
+    }).join('');
+    return `<ol class="run-timeline${reveal ? ' revealing' : ''}">${nodes}</ol>`;
+  }
+
   function renderStagePipeline(cards, isLatest, groupKey) {
     if (!cards.length) return '';
     // The current run stays fully expanded with the live tool bar.
@@ -959,16 +980,20 @@
         </article>
       `;
     }
-    // Earlier/finished runs collapse to a slim, full-width summary bar so a
-    // completed phase never competes for attention with the live one.
+    // Earlier/finished runs collapse to a slim timeline so a completed phase
+    // never competes for attention with the live one.
     const expanded = state.expandedGroups.has(groupKey);
     const stepWord = cards.length > 1 ? 'steps' : 'step';
-    const chips = cards.map((card) => `<span class="stage-done-chip">✓ ${escapeHtml(card.title)}</span>`).join('');
+    const reveal = !state.revealedGroups.has(groupKey);
+    if (reveal) state.revealedGroups.add(groupKey);
+    const timeline = renderRunTimeline(cards, isLatest, reveal);
     const bar = `
       <div class="stage-group-bar">
-        <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
-        ${expanded ? '' : `<div class="stage-group-chips">${chips}</div>`}
-        <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
+        <div class="stage-group-bar-head">
+          <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
+          <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
+        </div>
+        ${timeline}
       </div>
     `;
     if (!expanded) {
