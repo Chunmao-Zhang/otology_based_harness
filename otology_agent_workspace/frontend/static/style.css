@@ -5483,6 +5483,122 @@ textarea#message-input.chat-input:focus-visible,
   line-height: 1.55;
 }
 
+.stage-pipeline-message {
+  align-items: flex-start;
+}
+
+.stage-card-list {
+  width: min(700px, calc(100vw - 72px));
+  display: grid;
+  gap: 10px;
+}
+
+.stage-card {
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 16px 16px 16px 4px;
+  background: color-mix(in srgb, var(--panel-strong) 94%, var(--accent-soft));
+  box-shadow: 0 10px 26px rgba(15, 23, 42, .06);
+  overflow: hidden;
+}
+
+.stage-card-head {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.stage-card-head strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.stage-card-head small {
+  margin-left: auto;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 760;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.stage-card-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.stage-card.running .stage-card-icon {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  animation: onto-pulse 1.2s ease-in-out infinite;
+}
+
+.stage-card.waiting .stage-card-icon {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.stage-card.done {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+
+.stage-card.done .stage-card-icon {
+  color: #fff;
+  background: var(--accent);
+}
+
+.stage-card-body {
+  border-top: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+  padding: 12px 14px 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.stage-card-section {
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.stage-card-section > span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 780;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.stage-card-section p {
+  margin: 0;
+}
+
+.stage-card-section ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.stage-card-section.muted {
+  color: var(--ink-muted);
+}
+
 .gate-actions {
   display: flex;
   gap: 14px;

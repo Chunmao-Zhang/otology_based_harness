@@ -87,34 +87,43 @@ STAGE_RUNNING_TEXT = {
 }
 
 STAGE_ACTIVITY_TEXT = {
-    "clarify": "正在理解问题并整理可确认的任务描述。",
-    "confirm_problem": "已整理出问题澄清结果，等待你确认后继续。",
-    "evidence": "正在整理本地文件和必要的公开证据。",
-    "schema_build": "正在把证据转成可编辑的 ontology schema。",
-    "schema_judge": "正在检查当前 schema 是否足够回答问题。",
-    "confirm_schema": "schema 已准备好，等待你确认后再抽取数据。",
-    "extract": "正在按确认后的 schema 抽取实例、属性和关系。",
-    "solve": "正在进入 workspace，用代码基于抽取结果生成答案。",
+    "clarify": "Clarifying the problem statement and solution plan.",
+    "confirm_problem": "Problem clarification is ready for your confirmation.",
+    "evidence": "Collecting uploaded and public evidence as needed.",
+    "schema_build": "Building an editable ontology schema from the evidence.",
+    "schema_judge": "Checking whether the current schema can answer the question.",
+    "confirm_schema": "Schema is ready and waiting for your confirmation.",
+    "extract": "Extracting instances, attributes, and relations with the confirmed schema.",
+    "solve": "Solving the question from the extracted workspace data.",
 }
 
 TOOL_ACTIVITY_TEXT = {
-    "source_reader": "正在读取并抽样分析上传文件。",
-    "evidence_retriever": "正在从已整理证据中检索相关片段。",
-    "web_search": "正在补充必要的公开网页证据。",
-    "schema_validator": "正在校验 schema 的实体、字段和关系约束。",
-    "schema_draft_builder": "正在生成 draft schema 文件。",
-    "evidence_manifest_writer": "正在保存证据清单。",
-    "write_todos": "正在规划当前阶段的处理清单。",
-    "task": "正在调用专门子 agent 处理当前阶段。",
-    "data_extract_company_csv": "正在从表格证据中抽取结构化实例。",
-    "workspace_builder_tool": "正在构建可执行的求解 workspace。",
-    "workspace_solver_tool": "正在执行 workspace 求解流程。",
-    "execute_code": "正在运行求解代码并读取执行结果。",
+    "source_reader": "Reading the provided evidence.",
+    "evidence_retriever": "Retrieving relevant evidence snippets.",
+    "web_search": "Looking up supplemental public evidence.",
+    "schema_validator": "Validating schema entities, fields, and relations.",
+    "schema_draft_builder": "Preparing the draft schema.",
+    "evidence_manifest_writer": "Saving the evidence manifest.",
+    "write_todos": "Planning the current processing step.",
+    "task": "Running the specialist worker for this step.",
+    "data_extract_company_csv": "Extracting structured records from tabular evidence.",
+    "workspace_builder_tool": "Preparing the executable answer workspace.",
+    "workspace_solver_tool": "Running the answer workflow.",
+    "execute_code": "Executing answer code and reading the result.",
 }
 
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def redact_paths(text: str) -> str:
+    """Remove local filesystem paths from user-visible text."""
+    if not isinstance(text, str) or not text:
+        return text
+    text = re.sub(r"(?<![\w])(?:/[^\s`'\"<>|)]+)+", "[hidden path]", text)
+    text = re.sub(r"\b[A-Za-z]:\\[^\s`'\"<>|)]+", "[hidden path]", text)
+    return text
 
 
 def session_path(session_id: str) -> Path:
@@ -571,7 +580,7 @@ async def sessions_delete(session_id: str):
 # ─── Chat ─────────────────────────────────────────────────────────────────────
 
 def ui_message(role: str, content: str = "", **extra: Any) -> dict[str, Any]:
-    message = {"id": uuid4().hex[:10], "role": role, "content": content, "timestamp": now_iso()}
+    message = {"id": uuid4().hex[:10], "role": role, "content": redact_paths(content), "timestamp": now_iso()}
     message.update(extra)
     return message
 
@@ -580,13 +589,13 @@ def stage_activity(stage_id: str, status: str = "running") -> dict[str, Any]:
     title = stage_label(stage_id)
     content = STAGE_ACTIVITY_TEXT.get(stage_id, STAGE_RUNNING_TEXT.get(stage_id, title))
     if status == "done":
-        content = f"{title} 已完成。"
+        content = f"{title} is complete."
     return ui_message("event", content, kind="stage", title=title, stage=stage_id, status=status)
 
 
 def tool_activity(tool_name: str) -> dict[str, Any]:
-    content = TOOL_ACTIVITY_TEXT.get(tool_name, "正在执行一个内部处理步骤。")
-    return ui_message("event", content, kind="tool", title="处理步骤", status="running")
+    content = TOOL_ACTIVITY_TEXT.get(tool_name, "Running an internal processing step.")
+    return ui_message("event", content, kind="tool", title="Tool activity", status="running")
 
 
 def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
@@ -921,7 +930,7 @@ def write_evidence_manifest(run_dir: Path, question: str, payload: dict[str, Any
             "source_kind": "upload",
             "file_type": Path(path).suffix.lstrip(".") or "unknown",
             "file_path": path,
-            "reason": "用户上传文件，可作为 schema 和数据抽取证据。",
+            "reason": "User-uploaded evidence for schema building and data extraction.",
         }
         for path in upload_paths
     ]
@@ -945,15 +954,35 @@ def write_evidence_manifest(run_dir: Path, question: str, payload: dict[str, Any
 
 def schema_relation_table(schema_text: str) -> str:
     parsed = parse_schema(schema_text)
+    entity_meta = {
+        class_info.name: (class_info.entity_type, class_info.value_type)
+        for class_info in parsed.classes
+    }
     rows = []
     for class_info in parsed.classes:
         for field in class_info.fields:
             if field.kind == "relation" and not field.reverse:
-                rows.append((class_info.name, field.name, field.target or ""))
+                head_type, head_data_type = entity_meta.get(class_info.name, ("", ""))
+                tail_type, tail_data_type = entity_meta.get(field.target or "", ("", ""))
+                rows.append((
+                    class_info.name,
+                    head_type,
+                    head_data_type,
+                    field.name,
+                    field.target or "",
+                    tail_type,
+                    tail_data_type,
+                ))
     if not rows:
         return ""
-    lines = ["| Head | Relation | Tail |", "|---|---|---|"]
-    lines.extend(f"| {head} | {relation} | {tail} |" for head, relation, tail in rows)
+    lines = [
+        "| Head entity | Head entity type | Head entity data type | Relation name | Tail entity | Tail entity type | Tail entity data type |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    lines.extend(
+        f"| {head} | {head_type} | {head_data_type} | {relation} | {tail} | {tail_type} | {tail_data_type} |"
+        for head, head_type, head_data_type, relation, tail, tail_type, tail_data_type in rows
+    )
     return "\n".join(lines)
 
 
@@ -961,25 +990,24 @@ def schema_confirmation_message(run_dir: Path, judgment: dict[str, Any], evidenc
     draft_path = run_dir / "concepts" / "draft_schema.py"
     schema_text = draft_path.read_text(encoding="utf-8")
     coverage = judgment.get("coverage_score", "")
-    answerable = "可以回答" if judgment.get("answerable", False) else "需要补充"
+    answerable = "answerable" if judgment.get("answerable", False) else "needs more schema coverage"
     missing = judgment.get("missing_requirements", [])
-    missing_text = "无" if not missing else "；".join(str(item) for item in missing)
+    missing_text = "none" if not missing else "; ".join(str(item) for item in missing)
     sources = evidence.get("sources", [])
     source_count = len(sources) if isinstance(sources, list) else 0
     relation_table = schema_relation_table(schema_text)
     parts = [
-        "Schema 草案已准备好，当前流程会停在这里等待你确认；确认前不会抽取数据，也不会给最终答案。",
+        "The draft schema is ready. The workflow is paused here until you confirm it; data extraction and final answering will not run before confirmation.",
         "",
-        f"**Answerability Judgment**: {answerable}（coverage: {coverage}）",
-        f"**Evidence sources**: {source_count} 个；web search: {'yes' if evidence.get('needs_web_search') else 'no'}",
+        f"**Answerability Judgment**: {answerable} (coverage: {coverage})",
+        f"**Evidence sources**: {source_count}; web search: {'yes' if evidence.get('needs_web_search') else 'no'}",
         f"**Missing requirements**: {missing_text}",
-        f"**Schema path**: `{draft_path}`",
     ]
     if relation_table:
         parts.extend(["", "**Relation table**", "", relation_table])
     if len(schema_text) <= 2200:
         parts.extend(["", "**Draft schema**", "", f"```python\n{schema_text}\n```"])
-    parts.extend(["", "请在 Schema Studio 中检查/编辑后确认，或直接点击 Confirm & Continue 继续。"])
+    parts.extend(["", "Review or edit the schema in Schema Studio, then confirm it to continue."])
     return "\n".join(parts)
 
 
@@ -1095,13 +1123,10 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
     if solver_payload.get("_raw") and solver.get("ok"):
         return str(solver_payload["_raw"]).strip()
     if solver.get("ok"):
-        return (
-            f"{solver.get('answer', '')}\n\n"
-            f"**Schema used**: `{confirmed_path}`\n\n"
-            f"**Workspace**: `{workspace.get('workspace_dir', run_dir)}`\n\n"
-            f"**Source files**: {', '.join(solver.get('source_files', []))}"
-        )
-    return "求解失败，请查看 Run & Results 中的 solver_result.json。"
+        source_files = [Path(str(item)).name for item in solver.get("source_files", []) if str(item).strip()]
+        source_summary = f"\n\n**Source files**: {', '.join(source_files)}" if source_files else ""
+        return f"{solver.get('answer', '')}\n\n**Schema used**: confirmed schema{source_summary}"
+    return "Solving failed. Please review the run results and try again."
 
 
 MOCK_SCHEMA = '''from typing import List, Optional
@@ -1269,9 +1294,9 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
     activity_seen: set[str] = set()
     start_activity = ui_message(
         "event",
-        "收到问题，开始按 ontology QA 流程处理；下面会持续展示阶段进展。",
+        "Question received. The ontology QA pipeline is starting.",
         kind="run_start",
-        title="开始处理",
+        title="Start processing",
         status="running",
     )
     session["messages"].append(start_activity)

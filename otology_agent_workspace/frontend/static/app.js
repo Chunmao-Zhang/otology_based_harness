@@ -67,6 +67,7 @@
     panelTab: 'evidence',
     isComposing: false,
     activeClarificationMessageId: '',
+    expandedStageCards: new Set(),
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -77,8 +78,44 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  function sanitizeDisplayText(value) {
+    return String(value == null ? '' : value)
+      .replace(/(^|[\s`"'(])\/(?:home|Users|tmp|var|mnt|opt|workspace|runs)\b[^\s`"'<>|)]*/g, '$1[hidden path]')
+      .replace(/(^|[\s`"'(])runs\/ontology_workspace_runs\/[^\s`"'<>|)]*/g, '$1[hidden path]')
+      .replace(/\b[A-Za-z]:\\[^\s`"'<>|)]+/g, '[hidden path]');
+  }
+
+  const ACTIVITY_TEXT_TRANSLATIONS = new Map(Object.entries({
+    '正在理解问题并整理可确认的任务描述。': 'Clarifying the problem statement and solution plan.',
+    '已整理出问题澄清结果，等待你确认后继续。': 'Problem clarification is ready for your confirmation.',
+    '正在整理本地文件和必要的公开证据。': 'Collecting uploaded and public evidence as needed.',
+    '正在把证据转成可编辑的 ontology schema。': 'Building an editable ontology schema from the evidence.',
+    '正在检查当前 schema 是否足够回答问题。': 'Checking whether the current schema can answer the question.',
+    'schema 已准备好，等待你确认后再抽取数据。': 'Schema is ready and waiting for your confirmation.',
+    '正在按确认后的 schema 抽取实例、属性和关系。': 'Extracting instances, attributes, and relations with the confirmed schema.',
+    '正在进入 workspace，用代码基于抽取结果生成答案。': 'Solving the question from the extracted workspace data.',
+    '正在读取并抽样分析上传文件。': 'Reading the provided evidence.',
+    '正在从已整理证据中检索相关片段。': 'Retrieving relevant evidence snippets.',
+    '正在补充必要的公开网页证据。': 'Looking up supplemental public evidence.',
+    '正在校验 schema 的实体、字段和关系约束。': 'Validating schema entities, fields, and relations.',
+    '正在生成 draft schema 文件。': 'Preparing the draft schema.',
+    '正在保存证据清单。': 'Saving the evidence manifest.',
+    '正在规划当前阶段的处理清单。': 'Planning the current processing step.',
+    '正在调用专门子 agent 处理当前阶段。': 'Running the specialist worker for this step.',
+    '正在从表格证据中抽取结构化实例。': 'Extracting structured records from tabular evidence.',
+    '正在构建可执行的求解 workspace。': 'Preparing the executable answer workspace.',
+    '正在执行 workspace 求解流程。': 'Running the answer workflow.',
+    '正在运行求解代码并读取执行结果。': 'Executing answer code and reading the result.',
+    '正在执行一个内部处理步骤。': 'Running an internal processing step.',
+  }));
+
+  function normalizeActivityText(value) {
+    const text = sanitizeDisplayText(value);
+    return ACTIVITY_TEXT_TRANSLATIONS.get(text) || text;
+  }
+
   function formatInline(text) {
-    let safe = escapeHtml(text);
+    let safe = escapeHtml(sanitizeDisplayText(text));
     safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
     safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
@@ -106,7 +143,7 @@
   }
 
   function formatMarkdown(value) {
-    const lines = String(value || '').replace(/\r\n/g, '\n').split('\n');
+    const lines = sanitizeDisplayText(value).replace(/\r\n/g, '\n').split('\n');
     const blocks = [];
     let index = 0;
     while (index < lines.length) {
@@ -460,14 +497,14 @@
       <section class="clarification-card">
         <div class="clarification-head">
           <span class="clarification-kicker">Problem clarification</span>
-          <h3>问题澄清</h3>
+          <h3>Clarified question</h3>
         </div>
         <div class="clarification-problem">
-          <span>核心问题</span>
+          <span>Problem</span>
           <strong>${formatInline(clarification.problem || '')}</strong>
         </div>
         <div class="clarification-plan">
-          <span>计划步骤</span>
+          <span>Plan</span>
           <ol>${steps}</ol>
         </div>
         ${actionsHtml}
@@ -483,36 +520,155 @@
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
 
-  function renderActivity(message) {
-    let status = message.status || 'running';
-    if (message.kind === 'stage' && message.stage) {
-      const current = (state.stages || []).find((stage) => stage.id === message.stage);
-      if (current && current.status) status = current.status;
+  function stageById(stageId) {
+    return (state.stages || []).find((stage) => stage.id === stageId) || null;
+  }
+
+  function stageStatusText(status) {
+    return {
+      pending: 'Pending',
+      running: 'Working',
+      waiting: 'Waiting for confirmation',
+      done: 'Done',
+    }[status] || 'Working';
+  }
+
+  function stageCardIcon(status) {
+    if (status === 'done') return '✓';
+    if (status === 'waiting') return '!';
+    if (status === 'running') return '●';
+    return '○';
+  }
+
+  function inferActiveStageId() {
+    const active = (state.stages || []).find((stage) => ['running', 'waiting'].includes(stage.status));
+    if (active) return active.id;
+    const progressed = (state.stages || []).filter((stage) => stage.status !== 'pending');
+    return progressed.length ? progressed[progressed.length - 1].id : '';
+  }
+
+  function makeStageCard(stageId, title) {
+    const stage = stageById(stageId);
+    return {
+      id: stageId,
+      title: (stage && stage.label) || title || 'Processing step',
+      status: (stage && stage.status) || 'running',
+      thinking: '',
+      tools: [],
+    };
+  }
+
+  function buildStageCards(events) {
+    const cards = new Map();
+    let activeStageId = inferActiveStageId();
+    (events || []).forEach((message) => {
+      if (!message || message.kind === 'run_start') return;
+      if (message.kind === 'stage' && message.stage) {
+        activeStageId = message.stage;
+        if (!cards.has(activeStageId)) cards.set(activeStageId, makeStageCard(activeStageId, message.title));
+        const card = cards.get(activeStageId);
+        card.title = message.title || card.title;
+        card.status = (stageById(activeStageId) || {}).status || message.status || card.status;
+        card.thinking = normalizeActivityText(message.content || card.thinking);
+        return;
+      }
+      if (message.kind === 'tool') {
+        const stageId = activeStageId || inferActiveStageId();
+        if (!stageId) return;
+        if (!cards.has(stageId)) cards.set(stageId, makeStageCard(stageId, stageById(stageId)?.label));
+        const card = cards.get(stageId);
+        const content = normalizeActivityText(message.content || 'Running an internal tool.');
+        if (content && !card.tools.includes(content)) card.tools.push(content);
+      }
+    });
+    if (!cards.size) {
+      (state.stages || []).filter((stage) => stage.status !== 'pending').forEach((stage) => {
+        cards.set(stage.id, makeStageCard(stage.id, stage.label));
+      });
     }
-    if (message.kind === 'run_start' && (state.stages || []).some((stage) => stage.status !== 'pending')) {
-      status = 'done';
-    }
-    const title = message.title || 'Processing step';
+    return (state.stages || [])
+      .filter((stage) => cards.has(stage.id))
+      .map((stage) => {
+        const card = cards.get(stage.id);
+        card.status = stage.status || card.status;
+        card.title = stage.label || card.title;
+        return card;
+      });
+  }
+
+  function renderStageCard(card) {
+    const isDone = card.status === 'done';
+    const expanded = !isDone || state.expandedStageCards.has(card.id);
+    const statusLabel = isDone && !expanded ? '' : stageStatusText(card.status);
+    const toolsHtml = card.tools.length
+      ? `
+        <div class="stage-card-section">
+          <span>Tool activity</span>
+          <ul>${card.tools.map((tool) => `<li>${formatInline(tool)}</li>`).join('')}</ul>
+        </div>
+      `
+      : '';
+    const thinkingHtml = card.thinking && expanded
+      ? `
+        <div class="stage-card-section">
+          <span>Current model progress</span>
+          <p>${formatInline(card.thinking)}</p>
+        </div>
+      `
+      : '';
     return `
-      <article class="message event">
-        <div class="avatar activity-avatar">•</div>
-        <div class="activity-card ${escapeHtml(status)}">
-          <div class="activity-card-head">
-            <span class="activity-dot"></span>
-            <strong>${escapeHtml(title)}</strong>
-            <small>${status === 'waiting' ? 'Waiting' : status === 'done' ? 'Done' : 'Working'}</small>
-          </div>
-          <p>${formatInline(message.content || '')}</p>
+      <section class="stage-card ${escapeHtml(card.status)} ${expanded ? 'expanded' : 'collapsed'}">
+        <button class="stage-card-head" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
+          <span class="stage-card-icon">${stageCardIcon(card.status)}</span>
+          <strong>${escapeHtml(card.title)}</strong>
+          ${statusLabel ? `<small>${statusLabel}</small>` : ''}
+        </button>
+        ${expanded ? `<div class="stage-card-body">${thinkingHtml}${toolsHtml || '<div class="stage-card-section muted">No tool activity to show for this step yet.</div>'}</div>` : ''}
+      </section>
+    `;
+  }
+
+  function renderStagePipeline(cards) {
+    if (!cards.length) return '';
+    return `
+      <article class="message event stage-pipeline-message">
+        <div class="avatar activity-avatar">O</div>
+        <div class="stage-card-list">
+          ${cards.map(renderStageCard).join('')}
         </div>
       </article>
     `;
+  }
+
+  function buildMessageTimeline(messages) {
+    const items = [];
+    let eventBuffer = [];
+    const flushEvents = () => {
+      if (!eventBuffer.length) return;
+      const cards = buildStageCards(eventBuffer);
+      if (cards.length) items.push({ role: 'pipeline', cards });
+      eventBuffer = [];
+    };
+    messages.forEach((message) => {
+      if (message.role === 'event') {
+        eventBuffer.push(message);
+        return;
+      }
+      flushEvents();
+      items.push(message);
+    });
+    flushEvents();
+    if (!items.some((item) => item.role === 'pipeline') && (state.stages || []).some((stage) => stage.status !== 'pending')) {
+      items.push({ role: 'pipeline', cards: buildStageCards([]) });
+    }
+    return items;
   }
 
   function clarifyStepRowHtml(value) {
     return `
       <div class="clarify-step">
         <span class="clarify-step-no"></span>
-        <input class="clarify-step-input" type="text" value="${escapeHtml(value)}" placeholder="Describe this step">
+        <input class="clarify-step-input" type="text" value="${escapeHtml(sanitizeDisplayText(value))}" placeholder="Describe this step">
         <button type="button" class="clarify-step-remove" title="Remove step" aria-label="Remove step">×</button>
       </div>
     `;
@@ -526,7 +682,7 @@
           <p>Adjust the problem statement and solution steps below, then confirm.</p>
         </div>
         <label class="clarify-label">Problem</label>
-        <textarea class="clarify-problem" rows="2">${escapeHtml(clarification.problem || '')}</textarea>
+        <textarea class="clarify-problem" rows="2">${escapeHtml(sanitizeDisplayText(clarification.problem || ''))}</textarea>
         <label class="clarify-label">Solution steps</label>
         <div class="clarify-steps">${(clarification.steps || []).map(clarifyStepRowHtml).join('')}</div>
         <button type="button" class="clarify-add-step">+ Add step</button>
@@ -573,7 +729,7 @@
     const message = state.messages.find((item) => item.id === messageId);
     if (!message || !message.clarification || !el.clarifyOverlay) return;
     state.activeClarificationMessageId = messageId;
-    el.clarifyModalProblem.value = message.clarification.problem || '';
+    el.clarifyModalProblem.value = sanitizeDisplayText(message.clarification.problem || '');
     renderClarifyModalSteps(message.clarification.steps || []);
     el.clarifyOverlay.hidden = false;
     el.body.classList.add('modal-open');
@@ -636,12 +792,15 @@
     const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
-    el.messages.innerHTML = visible.map((message) => {
+    el.messages.innerHTML = buildMessageTimeline(visible).map((message) => {
+      if (message.role === 'pipeline') {
+        return renderStagePipeline(message.cards || []);
+      }
       if (message.role === 'user') {
         const uploads = (message.uploads || []).length
           ? `<div class="bubble-uploads">${message.uploads.map((name) => `<span class="bubble-upload-chip">📎 ${escapeHtml(name)}</span>`).join('')}</div>`
           : '';
-        return `<article class="message user"><div class="bubble">${escapeHtml(message.content)}${uploads}</div></article>`;
+        return `<article class="message user"><div class="bubble">${escapeHtml(sanitizeDisplayText(message.content))}${uploads}</div></article>`;
       }
       if (message.role === 'assistant') {
         return `
@@ -651,11 +810,17 @@
           </article>
         `;
       }
-      if (message.role === 'event') {
-        return renderActivity(message);
-      }
-      return `<article class="message system"><div class="bubble">${escapeHtml(message.content || '')}</div></article>`;
+      return `<article class="message system"><div class="bubble">${escapeHtml(sanitizeDisplayText(message.content || ''))}</div></article>`;
     }).join('');
+    el.messages.querySelectorAll('[data-stage-card]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const stageId = button.getAttribute('data-stage-card');
+        if (!stageId) return;
+        if (state.expandedStageCards.has(stageId)) state.expandedStageCards.delete(stageId);
+        else state.expandedStageCards.add(stageId);
+        renderMessages();
+      });
+    });
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
       button.addEventListener('click', () => sendQuickReply('Confirm'));
     });
@@ -675,8 +840,8 @@
     });
     if (window.Prism) window.Prism.highlightAllUnder(el.messages);
     el.messages.scrollTop = el.messages.scrollHeight;
-  }
     scrollToLatestMessage();
+  }
 
   // ── Stage strip ─────────────────────────────────────────────────────────
 
@@ -772,8 +937,8 @@
       <div class="onto-evidence-row">
         <span class="onto-evidence-kind ${escapeHtml(source.source_kind || '')}">${source.source_kind === 'web' ? 'Web' : 'Upload'}</span>
         <div class="onto-file-info">
-          <strong>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener">${escapeHtml(source.title || source.source_id)}</a>` : escapeHtml(source.title || source.source_id)}</strong>
-          <small>${escapeHtml(source.reason || '')}</small>
+          <strong>${source.url ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener">${escapeHtml(sanitizeDisplayText(source.title || source.source_id))}</a>` : escapeHtml(sanitizeDisplayText(source.title || source.source_id))}</strong>
+          <small>${escapeHtml(sanitizeDisplayText(source.reason || ''))}</small>
         </div>
         ${source.source_kind === 'web' ? `<span class="onto-evidence-stage ${source.stage === 'extract' ? 'extract' : 'evidence'}">${source.stage === 'extract' ? 'Extraction' : 'Collection'}</span>` : ''}
       </div>
@@ -863,34 +1028,43 @@
     }
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
+    const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item, index) => `
       <tr>
         <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}"></td>
         <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}"></td>
+        <td>${escapeHtml(item.value_type || 'str')}</td>
       </tr>
     `).join('');
-    const relationRows = relations.map((item, index) => `
-      <tr>
-        <td>${escapeHtml(item.head_entity)}</td>
-        <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}"></td>
-        <td>${escapeHtml(item.tail_entity)}</td>
-        <td><span class="onto-rel-type">${escapeHtml(item.relation_type || '')}</span></td>
-      </tr>
-    `).join('');
+    const relationRows = relations.map((item, index) => {
+      const head = entityMeta.get(item.head_entity) || {};
+      const tail = entityMeta.get(item.tail_entity) || {};
+      return `
+        <tr>
+          <td>${escapeHtml(item.head_entity)}</td>
+          <td>${escapeHtml(head.entity_type || '')}</td>
+          <td>${escapeHtml(head.value_type || 'str')}</td>
+          <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}"></td>
+          <td>${escapeHtml(item.tail_entity)}</td>
+          <td>${escapeHtml(tail.entity_type || '')}</td>
+          <td>${escapeHtml(tail.value_type || 'str')}</td>
+        </tr>
+      `;
+    }).join('');
     const editable = schema.status === 'draft';
     el.schemaContent.innerHTML = `
       <div class="onto-section">
         <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
         <p class="onto-section-hint">${editable ? 'Edit entity and relation names directly, apply changes, then confirm.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
-        <h4 class="onto-subhead">Entities</h4>
+        <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table">
-          <thead><tr><th>Entity</th><th>Semantic Type</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="2">None</td></tr>'}</tbody>
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>Data Type</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
-        <h4 class="onto-subhead">Relations</h4>
+        <h4 class="onto-subhead">Schema Table</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table">
-          <thead><tr><th>Head</th><th>Relation</th><th>Tail</th><th>Type</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
         </table></div>
         ${editable ? `
           <div class="onto-schema-actions">
@@ -902,7 +1076,7 @@
       </div>
       <div class="onto-section">
         <div class="onto-section-head"><h3>Python View</h3></div>
-        <pre class="onto-code"><code class="language-python">${escapeHtml(schema.schema_text)}</code></pre>
+        <pre class="onto-code"><code class="language-python">${escapeHtml(sanitizeDisplayText(schema.schema_text))}</code></pre>
       </div>
     `;
     if (window.Prism) window.Prism.highlightAllUnder(el.schemaContent);
@@ -982,8 +1156,6 @@
   // ── Panel: progress tab ─────────────────────────────────────────────────
 
   async function renderProgressTab() {
-    let results = { report: {}, answer_sources: [] };
-    try { results = await api(withSession('/api/results')); } catch (err) { /* ignore */ }
     const stages = state.stages.length ? state.stages : [];
     const stageHtml = stages.length
       ? stages.map((stage) => `
@@ -994,31 +1166,11 @@
           </div>
         `).join('')
       : '<div class="onto-empty">No runs yet. Send a question to see pipeline progress here.</div>';
-    const report = results.report || {};
-    const hasReport = report.total_instances != null;
-    const reportHtml = hasReport
-      ? `
-        <div class="onto-stats-grid">
-          <div class="onto-stat"><strong>${report.total_instances}</strong><span>Instances</span></div>
-          <div class="onto-stat"><strong>${report.total_facts}</strong><span>Facts</span></div>
-          <div class="onto-stat"><strong>${report.total_relations}</strong><span>Relations</span></div>
-          <div class="onto-stat"><strong>${report.avg_confidence != null ? Number(report.avg_confidence).toFixed(2) : '-'}</strong><span>Avg confidence</span></div>
-        </div>
-        ${(report.relation_types_used || []).length ? `<p class="onto-section-hint">Relations used: ${report.relation_types_used.map(escapeHtml).join(', ')}</p>` : ''}
-      `
-      : '<div class="onto-empty">After data extraction, a summary of instances, facts and relations will appear here.</div>';
-    const sourcesHtml = (results.answer_sources || []).length
-      ? `<ul class="onto-source-list">${results.answer_sources.map((source) => `<li>${escapeHtml(source)}</li>`).join('')}</ul>`
-      : '';
     el.progressContent.innerHTML = `
       <div class="onto-section">
         <div class="onto-section-head"><h3>Pipeline Progress</h3></div>
+        <p class="onto-section-hint">This view only tracks the eight main ontology QA stages.</p>
         <div class="onto-stage-list">${stageHtml}</div>
-      </div>
-      <div class="onto-section">
-        <div class="onto-section-head"><h3>Extraction Summary</h3></div>
-        ${reportHtml}
-        ${sourcesHtml}
       </div>
     `;
   }
