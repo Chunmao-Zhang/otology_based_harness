@@ -50,6 +50,9 @@
     clarifyModalAddStep: document.getElementById('clarify-modal-add-step'),
     clarifyModalCancel: document.getElementById('clarify-modal-cancel'),
     clarifyModalSave: document.getElementById('clarify-modal-save'),
+    schemaOverlay: document.getElementById('schema-overlay'),
+    schemaModalBody: document.getElementById('schema-modal-body'),
+    schemaModalClose: document.getElementById('schema-modal-close'),
   };
 
   const state = {
@@ -68,6 +71,7 @@
     isComposing: false,
     activeClarificationMessageId: '',
     expandedStageCards: new Set(),
+    forceScroll: false,
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -133,13 +137,19 @@
     return safe;
   }
 
-  function scrollToLatestMessage() {
+  function isNearBottom() {
+    const threshold = 120;
+    const scrollY = window.scrollY || document.documentElement.scrollTop;
+    return window.innerHeight + scrollY >= document.documentElement.scrollHeight - threshold;
+  }
+
+  function scrollToLatestMessage(behavior = 'smooth') {
     window.requestAnimationFrame(() => {
       const last = el.messages.lastElementChild;
       if (last) {
-        last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+        last.scrollIntoView({ block: 'end', behavior });
       } else {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior });
       }
     });
   }
@@ -294,6 +304,7 @@
     state.activeClarificationMessageId = '';
     state.schema = null;
     state.schemaForm = [];
+    state.forceScroll = true;
     connectWs();
     renderMessages();
     renderStageStrip();
@@ -403,6 +414,7 @@
       uploads: uploadNames,
       timestamp: new Date().toISOString(),
     });
+    state.forceScroll = true;
     renderMessages();
     renderSessionRail();
     return content;
@@ -459,6 +471,7 @@
   function sendQuickReply(text) {
     if (state.running) return;
     const payload = { type: 'chat', content: text, upload_ids: [] };
+    state.forceScroll = true;
     if (state.wsReady) {
       state.ws.send(JSON.stringify(payload));
     } else {
@@ -523,6 +536,20 @@
     `;
   }
 
+  function analysisCompleteHtml(detail = 'Analysis complete. Review the confirmation card below before continuing.') {
+    return `
+      <section class="analysis-complete-card">
+        <div class="analysis-complete-head">
+          <span class="analysis-complete-icon">O</span>
+          <div>
+            <strong>Analysis complete</strong>
+            <p>${escapeHtml(detail)}</p>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
   function isSchemaReviewMessage(message) {
     const content = String(message.content || '');
     return content.includes('Schema path:')
@@ -583,6 +610,11 @@
           <span class="schema-review-status">Waiting</span>
         </div>
         <p class="schema-review-copy">Confirm the entity definitions and relation schema below, or open Schema Studio to edit them.</p>
+        <div class="schema-download-row">
+          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
+          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
+          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
+        </div>
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
@@ -618,10 +650,10 @@
   function renderAssistantContent(message) {
     if (message.clarification) {
       const actions = gateActions(message);
-      return renderClarificationCard(message.clarification, actions);
+      return `${analysisCompleteHtml('Problem clarification is ready for confirmation.')}${renderClarificationCard(message.clarification, actions)}`;
     }
     if (isSchemaReviewMessage(message)) {
-      return `${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
+      return `${analysisCompleteHtml('Schema analysis is complete. Review the schema below before extraction starts.')}${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -667,7 +699,7 @@
   function buildStageCards(events) {
     const cards = new Map();
     let activeStageId = inferActiveStageId();
-    (state.stages || []).forEach((stage) => {
+    (state.stages || []).filter((stage) => stage.status !== 'pending').forEach((stage) => {
       cards.set(stage.id, makeStageCard(stage.id, stage.label));
     });
     (events || []).forEach((message) => {
@@ -691,6 +723,7 @@
       }
     });
     return (state.stages || [])
+      .filter((stage) => stage.status !== 'pending' && cards.has(stage.id))
       .map((stage) => {
         const card = cards.get(stage.id);
         card.status = stage.status || card.status;
@@ -700,12 +733,12 @@
   }
 
   function renderTaskToolActivity(card) {
-    const items = card.tools.length ? card.tools : [card.thinking || `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`];
-    return items.map((item, index) => `
-      <div class="task-tool-card ${escapeHtml(card.status)}">
+    const items = card.tools.length ? [card.tools[card.tools.length - 1]] : [card.thinking || `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`];
+    return items.map((item) => `
+      <div class="task-tool-card ${escapeHtml(card.status)} tool-float">
         <div class="task-tool-topline">
           <span class="task-tool-status">${escapeHtml(card.status === 'done' ? 'Done' : card.status === 'waiting' ? 'Waiting' : 'Processing')}</span>
-          <span class="task-tool-step">Step ${index + 1}</span>
+          <span class="task-tool-step">Update ${Math.max(card.tools.length, 1)}</span>
         </div>
         <strong>${escapeHtml(card.title)}</strong>
         <p>${formatInline(item)}</p>
@@ -724,13 +757,13 @@
         : `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`
     );
     const output = card.status === 'waiting'
-      ? 'A confirmation step is ready below.'
-      : (card.status === 'done' ? 'This task is complete.' : 'Model output will update as this task completes.');
+      ? (card.thinking || 'Waiting for your confirmation.')
+      : (card.thinking || '');
     if (!expanded) {
       return `
         <section class="task-node ${escapeHtml(card.status)} folded">
           <button class="task-node-head" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="false">
-            <span class="task-node-icon">${stageCardIcon(card.status)}</span>
+            <span class="task-node-icon">${card.status === 'done' ? 'O' : stageCardIcon(card.status)}</span>
             <strong>${escapeHtml(card.title)}</strong>
             <small>${escapeHtml(stageStatusText(card.status))}</small>
           </button>
@@ -757,7 +790,7 @@
           </div>
           <div class="run-model-pane">
             <span class="run-section-label">Model output</span>
-            <div class="run-model-output">${formatMarkdown(output)}</div>
+            <div class="run-model-output">${output ? formatMarkdown(output) : '<span class="live-placeholder">Waiting for model output…</span>'}</div>
           </div>
         </div>
       </section>
@@ -926,6 +959,8 @@
 
   function renderMessages() {
     const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
+    const shouldAutoScroll = state.forceScroll || isNearBottom();
+    state.forceScroll = false;
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
     el.messages.innerHTML = buildMessageTimeline(visible).map((message) => {
@@ -972,11 +1007,13 @@
       });
     });
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
-      button.addEventListener('click', () => openPanel('schema'));
+      button.addEventListener('click', () => openSchemaModal());
     });
     if (window.Prism) window.Prism.highlightAllUnder(el.messages);
-    el.messages.scrollTop = el.messages.scrollHeight;
-    scrollToLatestMessage();
+    if (shouldAutoScroll) {
+      el.messages.scrollTop = el.messages.scrollHeight;
+      scrollToLatestMessage('smooth');
+    }
   }
 
   // ── Stage strip ─────────────────────────────────────────────────────────
@@ -1165,10 +1202,70 @@
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
     const entityMeta = new Map(entities.map((item) => [item.name, item]));
+    const entityRows = entities.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.name)}</td>
+        <td>${escapeHtml(item.entity_type || '')}</td>
+        <td>${escapeHtml(item.value_type || 'str')}</td>
+      </tr>
+    `).join('');
+    const relationRows = relations.map((item) => {
+      const head = entityMeta.get(item.head_entity) || {};
+      const tail = entityMeta.get(item.tail_entity) || {};
+      return `
+        <tr>
+          <td>${escapeHtml(item.head_entity)}</td>
+          <td>${escapeHtml(head.entity_type || '')}</td>
+          <td>${escapeHtml(head.value_type || 'str')}</td>
+          <td>${escapeHtml(item.relation)}</td>
+          <td>${escapeHtml(item.tail_entity)}</td>
+          <td>${escapeHtml(tail.entity_type || '')}</td>
+          <td>${escapeHtml(tail.value_type || 'str')}</td>
+        </tr>
+      `;
+    }).join('');
+    el.schemaContent.innerHTML = `
+      <div class="onto-section">
+        <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
+        <p class="onto-section-hint">${schema.status === 'draft' ? 'Draft schema is shown here for read-only review. Use Open Schema Studio in the confirmation card to edit it.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
+        <div class="schema-download-row compact">
+          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
+          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
+          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
+        </div>
+        <h4 class="onto-subhead">Entity Definitions</h4>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+        </table></div>
+        <h4 class="onto-subhead">Relation Schema</h4>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
+          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+        </table></div>
+      </div>
+      <div class="onto-section">
+        <div class="onto-section-head"><h3>Python View</h3></div>
+        <pre class="onto-code pretty-code"><code class="language-python">${escapeHtml(sanitizeDisplayText(schema.schema_text))}</code></pre>
+      </div>
+    `;
+    if (window.Prism) window.Prism.highlightAllUnder(el.schemaContent);
+  }
+
+  function renderSchemaModal() {
+    const schema = state.schema;
+    if (!schema || schema.status === 'none' || !schema.schema_text) {
+      el.schemaModalBody.innerHTML = '<div class="onto-empty">Schema preview is still loading.</div>';
+      return;
+    }
+    const editable = schema.status === 'draft';
+    const entities = state.schemaForm.filter((item) => item.type === 'entity');
+    const relations = state.schemaForm.filter((item) => item.type === 'relation');
+    const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item, index) => `
       <tr>
-        <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}"></td>
-        <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}"></td>
+        <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}">` : escapeHtml(item.name)}</td>
+        <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}">` : escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
       </tr>
     `).join('');
@@ -1180,76 +1277,83 @@
           <td>${escapeHtml(item.head_entity)}</td>
           <td>${escapeHtml(head.entity_type || '')}</td>
           <td>${escapeHtml(head.value_type || 'str')}</td>
-          <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}"></td>
+          <td>${editable ? `<input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}">` : escapeHtml(item.relation)}</td>
           <td>${escapeHtml(item.tail_entity)}</td>
           <td>${escapeHtml(tail.entity_type || '')}</td>
           <td>${escapeHtml(tail.value_type || 'str')}</td>
         </tr>
       `;
     }).join('');
-    const editable = schema.status === 'draft';
-    el.schemaContent.innerHTML = `
-      <div class="onto-section">
-        <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
-        <p class="onto-section-hint">${editable ? 'Edit entity and relation names directly, apply changes, then confirm.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
-        <h4 class="onto-subhead">Entity Definitions</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
-        </table></div>
-        <h4 class="onto-subhead">Relation Schema</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
-        </table></div>
-        ${editable ? `
-          <div class="onto-schema-actions">
-            <button class="onto-btn secondary" id="schema-apply" ${state.schemaDirty ? '' : 'disabled'}>Apply changes</button>
-            <button class="onto-btn primary" id="schema-confirm">Confirm Schema</button>
+    el.schemaModalBody.innerHTML = `
+      <div class="schema-modal-grid">
+        <section class="schema-preview-card modal-preview">
+          <h4>Entity Definitions</h4>
+          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+          </table></div>
+          <h4>Relation Schema</h4>
+          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
+            <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
+            <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+          </table></div>
+          <div class="schema-download-row compact">
+            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
+            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
+            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
           </div>
-          <div class="onto-schema-errors" id="schema-errors"></div>
-        ` : ''}
-      </div>
-      <div class="onto-section">
-        <div class="onto-section-head"><h3>Python View</h3></div>
-        <pre class="onto-code"><code class="language-python">${escapeHtml(sanitizeDisplayText(schema.schema_text))}</code></pre>
+          ${editable ? `
+            <div class="onto-schema-actions">
+              <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
+              <button class="onto-btn primary" id="schema-modal-confirm">Confirm &amp; Continue</button>
+            </div>
+            <div class="onto-schema-errors" id="schema-modal-errors"></div>
+          ` : ''}
+        </section>
+        <section class="schema-preview-card modal-code">
+          <h4>Python View</h4>
+          <pre class="onto-code pretty-code"><code class="language-python">${escapeHtml(sanitizeDisplayText(schema.schema_text))}</code></pre>
+        </section>
       </div>
     `;
-    if (window.Prism) window.Prism.highlightAllUnder(el.schemaContent);
-    el.schemaContent.querySelectorAll('.onto-cell-input').forEach((input) => {
+    if (window.Prism) window.Prism.highlightAllUnder(el.schemaModalBody);
+    bindSchemaModalEditing();
+  }
+
+  function bindSchemaModalEditing() {
+    if (!el.schemaModalBody) return;
+    const apply = el.schemaModalBody.querySelector('#schema-modal-apply');
+    const errorsBox = el.schemaModalBody.querySelector('#schema-modal-errors');
+    el.schemaModalBody.querySelectorAll('.onto-cell-input').forEach((input) => {
       input.addEventListener('input', () => {
         const kind = input.getAttribute('data-kind');
         const index = Number(input.getAttribute('data-index'));
         const field = input.getAttribute('data-field');
         const items = state.schemaForm.filter((item) => item.type === kind);
-        if (items[index]) {
-          if (kind === 'entity' && field === 'name') {
-            const oldName = items[index].name;
-            items[index].name = input.value;
-            state.schemaForm.forEach((item) => {
-              if (item.type === 'relation') {
-                if (item.head_entity === oldName) item.head_entity = input.value;
-                if (item.tail_entity === oldName) item.tail_entity = input.value;
-              }
-            });
-          } else {
-            items[index][field] = input.value;
-          }
-          state.schemaDirty = true;
-          const apply = el.schemaContent.querySelector('#schema-apply');
-          if (apply) apply.disabled = false;
+        if (!items[index]) return;
+        if (kind === 'entity' && field === 'name') {
+          const oldName = items[index].name;
+          items[index].name = input.value;
+          state.schemaForm.forEach((item) => {
+            if (item.type === 'relation') {
+              if (item.head_entity === oldName) item.head_entity = input.value;
+              if (item.tail_entity === oldName) item.tail_entity = input.value;
+            }
+          });
+        } else {
+          items[index][field] = input.value;
         }
+        state.schemaDirty = true;
+        if (apply) apply.disabled = false;
       });
     });
-    const applyBtn = el.schemaContent.querySelector('#schema-apply');
-    if (applyBtn) {
-      applyBtn.addEventListener('click', async () => {
-        const errorsBox = el.schemaContent.querySelector('#schema-errors');
+    if (apply) {
+      apply.addEventListener('click', async () => {
         try {
           const data = await api('/api/schema/form', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ run_id: schema.run_id, form: state.schemaForm }),
+            body: JSON.stringify({ run_id: state.schema.run_id, form: state.schemaForm }),
           });
           if (!data.ok) {
             errorsBox.textContent = (data.errors || []).join('; ') || 'Changes failed validation';
@@ -1258,21 +1362,22 @@
           state.schema = data;
           state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
           state.schemaDirty = false;
+          renderSchemaModal();
           renderSchemaTab();
+          renderMessages();
         } catch (err) {
           errorsBox.textContent = `Apply failed: ${err.message}`;
         }
       });
     }
-    const confirmBtn = el.schemaContent.querySelector('#schema-confirm');
+    const confirmBtn = el.schemaModalBody.querySelector('#schema-modal-confirm');
     if (confirmBtn) {
       confirmBtn.addEventListener('click', async () => {
-        const errorsBox = el.schemaContent.querySelector('#schema-errors');
         try {
           const data = await api('/api/schema/confirm', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ run_id: schema.run_id }),
+            body: JSON.stringify({ run_id: state.schema.run_id }),
           });
           if (!data.ok) {
             errorsBox.textContent = (data.errors || []).join('; ') || 'Confirmation failed';
@@ -1280,13 +1385,23 @@
           }
           state.schema = data;
           state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
-          renderSchemaTab();
-          sendQuickReply('I have confirmed the schema in Schema Studio. Please continue.');
+          closeSchemaModal();
+          sendQuickReply('Confirm');
         } catch (err) {
           errorsBox.textContent = `Confirmation failed: ${err.message}`;
         }
       });
     }
+  }
+
+  async function openSchemaModal() {
+    await refreshSchema();
+    renderSchemaModal();
+    el.schemaOverlay.hidden = false;
+  }
+
+  function closeSchemaModal() {
+    if (el.schemaOverlay) el.schemaOverlay.hidden = true;
   }
 
   // ── Panel: progress tab ─────────────────────────────────────────────────
@@ -1513,9 +1628,16 @@
         if (event.target === el.clarifyOverlay) closeClarificationModal();
       });
     }
+    if (el.schemaModalClose) el.schemaModalClose.addEventListener('click', closeSchemaModal);
+    if (el.schemaOverlay) {
+      el.schemaOverlay.addEventListener('click', (event) => {
+        if (event.target === el.schemaOverlay) closeSchemaModal();
+      });
+    }
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && el.confirmOverlay && !el.confirmOverlay.hidden) closeConfirm(false);
       if (event.key === 'Escape' && el.clarifyOverlay && !el.clarifyOverlay.hidden) closeClarificationModal();
+      if (event.key === 'Escape' && el.schemaOverlay && !el.schemaOverlay.hidden) closeSchemaModal();
     });
 
     el.fabMain.addEventListener('click', toggleFab);

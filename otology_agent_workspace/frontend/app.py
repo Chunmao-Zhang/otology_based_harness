@@ -21,7 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -505,6 +505,13 @@ def schema_payload(run_dir: Path) -> dict[str, Any]:
     return {"ok": True, "run_id": run_dir.name, "status": status, "form": form, "schema_text": text}
 
 
+def csv_cell(value: Any) -> str:
+    text = str(value or "")
+    if any(ch in text for ch in [",", '"', "\n", "\r"]):
+        return '"' + text.replace('"', '""') + '"'
+    return text
+
+
 @app.get("/api/schema")
 async def get_schema(session_id: str = ""):
     if session_id:
@@ -521,6 +528,56 @@ async def get_schema(session_id: str = ""):
         return schema_payload(run_dir)
     except Exception as exc:
         return {"ok": False, "run_id": run_dir.name, "status": "error", "error": str(exc), "form": [], "schema_text": ""}
+
+
+@app.get("/api/schema/download")
+async def download_schema_artifact(session_id: str = "", kind: str = "python"):
+    run_dir = run_dir_for_session(session_id) if session_id else (
+        latest_run_with("concepts/draft_schema.py") or latest_run_with("concepts/confirmed_schema.py")
+    )
+    if run_dir is None:
+        raise HTTPException(status_code=404, detail="Schema not found")
+    payload = schema_payload(run_dir)
+    kind = kind.lower().strip()
+    if kind == "python":
+        filename = "ontology_schema.py"
+        return Response(
+            content=payload["schema_text"],
+            media_type="text/x-python",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    form = payload.get("form") or []
+    entities = [item for item in form if item.get("type") == "entity"]
+    entity_meta = {item.get("name", ""): item for item in entities}
+    if kind == "entities":
+        rows = ["Entity,Entity Type,Entity Data Type"]
+        rows.extend(
+            f'{csv_cell(item.get("name", ""))},{csv_cell(item.get("entity_type", ""))},{csv_cell(item.get("value_type", "str"))}'
+            for item in entities
+        )
+        filename = "entity_definitions.csv"
+    elif kind == "relations":
+        rows = ["Head Entity,Head Entity Type,Head Entity Data Type,Relation Name,Tail Entity,Tail Entity Type,Tail Entity Data Type"]
+        for item in (entry for entry in form if entry.get("type") == "relation"):
+            head = entity_meta.get(item.get("head_entity", ""), {})
+            tail = entity_meta.get(item.get("tail_entity", ""), {})
+            rows.append(",".join([
+                csv_cell(item.get("head_entity", "")),
+                csv_cell(head.get("entity_type", "")),
+                csv_cell(head.get("value_type", "str")),
+                csv_cell(item.get("relation", "")),
+                csv_cell(item.get("tail_entity", "")),
+                csv_cell(tail.get("entity_type", "")),
+                csv_cell(tail.get("value_type", "str")),
+            ]))
+        filename = "relation_schema.csv"
+    else:
+        raise HTTPException(status_code=400, detail="Unknown schema artifact kind")
+    return Response(
+        content="\n".join(rows) + "\n",
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/schema/form")
