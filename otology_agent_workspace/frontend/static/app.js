@@ -79,10 +79,21 @@
   }
 
   function sanitizeDisplayText(value) {
-    return String(value == null ? '' : value)
+    const text = String(value == null ? '' : value)
       .replace(/(^|[\s`"'(])\/(?:home|Users|tmp|var|mnt|opt|workspace|runs)\b[^\s`"'<>|)]*/g, '$1[hidden path]')
       .replace(/(^|[\s`"'(])runs\/ontology_workspace_runs\/[^\s`"'<>|)]*/g, '$1[hidden path]')
       .replace(/\b[A-Za-z]:\\[^\s`"'<>|)]+/g, '[hidden path]');
+    return text.split('\n').filter((line) => {
+      const lower = line.trim().toLowerCase();
+      return !lower.startsWith('schema path:')
+        && !lower.startsWith('**schema path**:')
+        && !lower.startsWith('schema used:')
+        && !lower.startsWith('**schema used**:')
+        && !lower.startsWith('source files:')
+        && !lower.startsWith('**source files**:')
+        && !lower.startsWith('workspace path:')
+        && !lower.startsWith('**workspace path**:');
+    }).join('\n').trim();
   }
 
   const ACTIVITY_TEXT_TRANSLATIONS = new Map(Object.entries({
@@ -512,10 +523,66 @@
     `;
   }
 
+  function isSchemaReviewMessage(message) {
+    const content = String(message.content || '');
+    return content.includes('Schema path:')
+      || content.includes('Draft schema')
+      || content.includes('**Relation Schema**')
+      || content.includes('**Entity Definitions**');
+  }
+
+  function schemaPreviewTablesHtml() {
+    const entities = state.schemaForm.filter((item) => item.type === 'entity');
+    const relations = state.schemaForm.filter((item) => item.type === 'relation');
+    if (!entities.length && !relations.length) {
+      return '<div class="onto-empty">Schema preview is loading.</div>';
+    }
+    const entityMeta = new Map(entities.map((item) => [item.name, item]));
+    const entityRows = entities.map((item) => `
+      <tr>
+        <td>${escapeHtml(item.name)}</td>
+        <td>${escapeHtml(item.entity_type || '')}</td>
+        <td>${escapeHtml(item.value_type || 'str')}</td>
+      </tr>
+    `).join('');
+    const relationRows = relations.map((item) => {
+      const head = entityMeta.get(item.head_entity) || {};
+      const tail = entityMeta.get(item.tail_entity) || {};
+      return `
+        <tr>
+          <td>${escapeHtml(item.head_entity)}</td>
+          <td>${escapeHtml(head.entity_type || '')}</td>
+          <td>${escapeHtml(head.value_type || 'str')}</td>
+          <td>${escapeHtml(item.relation)}</td>
+          <td>${escapeHtml(item.tail_entity)}</td>
+          <td>${escapeHtml(tail.entity_type || '')}</td>
+          <td>${escapeHtml(tail.value_type || 'str')}</td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <div class="schema-preview-card">
+        <h4>Entity Definitions</h4>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table">
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+        </table></div>
+        <h4>Relation Schema</h4>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table">
+          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+        </table></div>
+      </div>
+    `;
+  }
+
   function renderAssistantContent(message) {
     if (message.clarification) {
       const actions = gateActions(message);
       return renderClarificationCard(message.clarification, actions);
+    }
+    if (isSchemaReviewMessage(message)) {
+      return `${schemaPreviewTablesHtml()}${gateActions(message)}`;
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -1178,6 +1245,7 @@
   async function refreshSidebarData() {
     await refreshUploads();
     await refreshSchema();
+    renderMessages();
     if (!el.panel.classList.contains('active')) return;
     if (state.panelTab === 'evidence') renderEvidenceTab();
     if (state.panelTab === 'schema') renderSchemaTab();

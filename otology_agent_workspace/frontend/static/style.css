@@ -5599,6 +5599,18 @@ textarea#message-input.chat-input:focus-visible,
   color: var(--ink-muted);
 }
 
+.schema-preview-card {
+  display: grid;
+  gap: 10px;
+}
+
+.schema-preview-card h4 {
+  margin: 4px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+
 .gate-actions {
   display: flex;
   gap: 14px;

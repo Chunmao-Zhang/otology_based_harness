@@ -113,6 +113,18 @@ TOOL_ACTIVITY_TEXT = {
 }
 
 
+USER_VISIBLE_OUTPUT_CONTRACT = """
+User-visible output contract:
+- Never reveal local filesystem paths, run directories, schema paths, workspace paths, or generated artifact filenames.
+- Do not mention internal tool names or implementation details.
+- During schema confirmation, show only:
+  1. Entity Definitions: Entity, Entity type, Entity data type.
+  2. Relation Schema: Head entity, Head entity type, Head entity data type, Relation name, Tail entity, Tail entity type, Tail entity data type.
+- Do not include answerability judgment, evidence source counts, missing requirements, schema paths, draft code, or explanatory paragraphs in the schema-confirmation message.
+- Final answers should contain the direct answer only; do not append schema path, workspace path, or source-file summaries.
+""".strip()
+
+
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -124,6 +136,35 @@ def redact_paths(text: str) -> str:
     text = re.sub(r"(?<![\w])(?:/[^\s`'\"<>|)]+)+", "[hidden path]", text)
     text = re.sub(r"\b[A-Za-z]:\\[^\s`'\"<>|)]+", "[hidden path]", text)
     return text
+
+
+def sanitize_user_visible_output(text: str) -> str:
+    text = redact_paths(text)
+    if not isinstance(text, str) or not text:
+        return text
+    filtered: list[str] = []
+    skip_code_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if stripped.startswith("```"):
+            skip_code_block = not skip_code_block
+            continue
+        if skip_code_block:
+            continue
+        if lower.startswith((
+            "schema path:",
+            "**schema path**:",
+            "schema used:",
+            "**schema used**:",
+            "source files:",
+            "**source files**:",
+            "workspace path:",
+            "**workspace path**:",
+        )):
+            continue
+        filtered.append(line)
+    return "\n".join(filtered).strip()
 
 
 def session_path(session_id: str) -> Path:
@@ -580,7 +621,7 @@ async def sessions_delete(session_id: str):
 # ─── Chat ─────────────────────────────────────────────────────────────────────
 
 def ui_message(role: str, content: str = "", **extra: Any) -> dict[str, Any]:
-    message = {"id": uuid4().hex[:10], "role": role, "content": redact_paths(content), "timestamp": now_iso()}
+    message = {"id": uuid4().hex[:10], "role": role, "content": sanitize_user_visible_output(content), "timestamp": now_iso()}
     message.update(extra)
     return message
 
@@ -734,7 +775,7 @@ def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
         f"{message}\n\n[run_context] run_id={run_id}. Persist every run artifact under "
         f"runs/ontology_workspace_runs/{run_id}/ (evidence_manifest.json, web_evidence/, "
         "draft_schema.py, data/). Reuse web evidence already persisted in this run instead "
-        "of repeating searches."
+        f"of repeating searches.\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
     )
 
     final_content = ""
@@ -781,7 +822,11 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
     os.environ["HARNESS_ROOT"] = str(ROOT)
     os.environ["HARNESS_AGENT_ID"] = "problem_clarifier"
     os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
-    payload = json.dumps({"question": question, "upload_paths": upload_paths}, ensure_ascii=False)
+    payload = json.dumps({
+        "question": question,
+        "upload_paths": upload_paths,
+        "_ui_output_contract": USER_VISIBLE_OUTPUT_CONTRACT,
+    }, ensure_ascii=False)
     emit({"type": "stage", "stage": "clarify", "status": "running"})
 
     final_content = ""
@@ -842,7 +887,10 @@ def run_subagent_json(
     tool_call_count = 0
     config = {"configurable": {"thread_id": f"{thread_id}:{agent_id}"}}
     for item in agent.stream(
-        {"messages": [HumanMessage(content=json.dumps(payload, ensure_ascii=False))]},
+        {"messages": [HumanMessage(content=json.dumps({
+            **payload,
+            "_ui_output_contract": USER_VISIBLE_OUTPUT_CONTRACT,
+        }, ensure_ascii=False))]},
         config=config,
         stream_mode=["values"],
         subgraphs=True,
@@ -986,28 +1034,35 @@ def schema_relation_table(schema_text: str) -> str:
     return "\n".join(lines)
 
 
+def schema_entity_table(schema_text: str) -> str:
+    parsed = parse_schema(schema_text)
+    rows = [
+        (class_info.name, class_info.entity_type, class_info.value_type)
+        for class_info in parsed.classes
+    ]
+    if not rows:
+        return ""
+    lines = [
+        "| Entity | Entity type | Entity data type |",
+        "|---|---|---|",
+    ]
+    lines.extend(
+        f"| {entity} | {entity_type} | {data_type} |"
+        for entity, entity_type, data_type in rows
+    )
+    return "\n".join(lines)
+
+
 def schema_confirmation_message(run_dir: Path, judgment: dict[str, Any], evidence: dict[str, Any]) -> str:
     draft_path = run_dir / "concepts" / "draft_schema.py"
     schema_text = draft_path.read_text(encoding="utf-8")
-    coverage = judgment.get("coverage_score", "")
-    answerable = "answerable" if judgment.get("answerable", False) else "needs more schema coverage"
-    missing = judgment.get("missing_requirements", [])
-    missing_text = "none" if not missing else "; ".join(str(item) for item in missing)
-    sources = evidence.get("sources", [])
-    source_count = len(sources) if isinstance(sources, list) else 0
+    entity_table = schema_entity_table(schema_text)
     relation_table = schema_relation_table(schema_text)
-    parts = [
-        "The draft schema is ready. The workflow is paused here until you confirm it; data extraction and final answering will not run before confirmation.",
-        "",
-        f"**Answerability Judgment**: {answerable} (coverage: {coverage})",
-        f"**Evidence sources**: {source_count}; web search: {'yes' if evidence.get('needs_web_search') else 'no'}",
-        f"**Missing requirements**: {missing_text}",
-    ]
+    parts = []
+    if entity_table:
+        parts.extend(["**Entity Definitions**", "", entity_table])
     if relation_table:
-        parts.extend(["", "**Relation table**", "", relation_table])
-    if len(schema_text) <= 2200:
-        parts.extend(["", "**Draft schema**", "", f"```python\n{schema_text}\n```"])
-    parts.extend(["", "Review or edit the schema in Schema Studio, then confirm it to continue."])
+        parts.extend(["", "**Relation Schema**", "", relation_table])
     return "\n".join(parts)
 
 
@@ -1121,11 +1176,9 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
 
     emit({"type": "stage", "stage": "solve", "status": "done"})
     if solver_payload.get("_raw") and solver.get("ok"):
-        return str(solver_payload["_raw"]).strip()
+        return sanitize_user_visible_output(str(solver_payload["_raw"]).strip())
     if solver.get("ok"):
-        source_files = [Path(str(item)).name for item in solver.get("source_files", []) if str(item).strip()]
-        source_summary = f"\n\n**Source files**: {', '.join(source_files)}" if source_files else ""
-        return f"{solver.get('answer', '')}\n\n**Schema used**: confirmed schema{source_summary}"
+        return sanitize_user_visible_output(str(solver.get("answer", "")))
     return "Solving failed. Please review the run results and try again."
 
 
@@ -1192,12 +1245,7 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
             emit({"type": "stage", "stage": stage, "status": "running"})
             time.sleep(pause)
         emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
-        return (
-            "The draft schema is ready. Judgment: the question is answerable (coverage 0.92).\n\n"
-            "| Head | Relation | Tail |\n|---|---|---|\n"
-            "| Company | operates_in_industry | Industry |\n\n"
-            "Review and edit it in the Schema Studio on the right. Once you confirm, I will continue with data extraction."
-        )
+        return schema_confirmation_message(run_dir, {"answerable": True}, {"sources": []})
     if stages.get("confirm_schema") == "waiting":
         if (run_dir / "concepts" / "draft_schema.py").exists():
             confirm_schema(run_dir / "concepts" / "draft_schema.py", run_dir / "concepts" / "confirmed_schema.py")
@@ -1218,8 +1266,7 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
         time.sleep(1.6)
         emit({"type": "stage", "stage": "solve", "status": "done"})
         return (
-            "Data extraction and solving are complete.\n\nData analytics companies in the US include: Palantir, Databricks, and Snowflake.\n\n"
-            "Source: company_sample.csv (18 instances, 42 facts)."
+            "Data analytics companies in the US include: Palantir, Databricks, and Snowflake."
         )
     emit({"type": "stage", "stage": "clarify", "status": "running"})
     time.sleep(1.4)
