@@ -910,7 +910,7 @@
               <div class="task-node-actions">
                 <span class="run-count">${toolCount} tool updates</span>
                 <button class="task-toggle-button" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
-                  ${expanded ? 'Hidden' : 'Open'}
+                  ${expanded ? 'Hide' : 'Open'}
                 </button>
               </div>
             </div>
@@ -974,23 +974,24 @@
     const stepWord = cards.length > 1 ? 'steps' : 'step';
     const reveal = !state.revealedGroups.has(groupKey);
     if (reveal) state.revealedGroups.add(groupKey);
-    const timeline = renderRunTimeline(cards, isLatest, reveal);
-    const bar = `
-      <div class="stage-group-bar">
-        <div class="stage-group-bar-head">
-          <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
-          <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
-        </div>
-        ${timeline}
+    const barHead = `
+      <div class="stage-group-bar-head">
+        <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
+        <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
       </div>
     `;
+    // Collapsed: a slim bar carrying the horizontal step timeline.
     if (!expanded) {
-      return `<article class="message event stage-pipeline-message collapsed-group">${bar}</article>`;
+      const timeline = renderRunTimeline(cards, isLatest, reveal);
+      return `<article class="message event stage-pipeline-message collapsed-group"><div class="stage-group-bar">${barHead}${timeline}</div></article>`;
     }
+    // Expanded: one cohesive panel — header on top, the steps laid out as a
+    // vertical timeline below. The horizontal timeline is dropped here because
+    // it would just duplicate the per-step rows.
     return `
       <article class="message event stage-pipeline-message expanded-group">
         <div class="stage-group-wrap">
-          ${bar}
+          <div class="stage-group-bar">${barHead}</div>
           <div class="task-node-list">
             ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
           </div>

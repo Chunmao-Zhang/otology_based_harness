@@ -7143,3 +7143,101 @@ body.modal-open { overflow: hidden; }
   }
   .run-timeline.revealing .run-timeline-line { transform: scaleX(1); }
 }
+
+/* ── Expanded completed group: one cohesive panel + vertical timeline ───────
+   When the user opens a finished run we no longer stack three separate boxes
+   (bar + N gradient cards). Instead the whole group is a single bordered panel:
+   a header strip on top, then the steps as a vertical timeline (a connecting
+   rail with green nodes), with each step flattened and individually openable. */
+.expanded-group .stage-group-wrap {
+  gap: 0;
+  border: 1px solid color-mix(in srgb, var(--success) 22%, var(--line));
+  border-radius: var(--radius-lg);
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+
+.expanded-group .stage-group-bar {
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--success) 16%, var(--line));
+  background: color-mix(in srgb, var(--success) 7%, var(--panel-strong));
+  padding: 11px 18px;
+  gap: 0;
+}
+
+.expanded-group .task-node-list {
+  display: block;
+  gap: 0;
+  padding: 4px 18px 10px;
+}
+
+/* Each step is a node on a vertical rail. */
+.expanded-group .task-node {
+  position: relative;
+  padding-left: 26px;
+}
+
+/* the connecting rail */
+.expanded-group .task-node::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: color-mix(in srgb, var(--success) 38%, var(--line));
+}
+.expanded-group .task-node:first-child::before { top: 22px; }
+.expanded-group .task-node:last-child:not(.expanded)::before { bottom: auto; height: 22px; }
+
+/* the node dot, aligned with the step title row */
+.expanded-group .task-node::after {
+  content: "";
+  position: absolute;
+  left: 3.5px;
+  top: 16px;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 15%, transparent);
+  z-index: 1;
+}
+
+/* flatten the per-step card: no separate border / gradient / shadow / radius */
+.expanded-group .run-card.complete {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.expanded-group .run-card-head.completed-task-head {
+  min-height: 0;
+  padding: 11px 0;
+  border-bottom: 0;
+}
+
+/* thin divider between consecutive steps */
+.expanded-group .task-node + .task-node .run-card-head.completed-task-head {
+  border-top: 1px solid var(--line);
+}
+
+/* the rail dot already marks completion, so drop the inline check glyph */
+.expanded-group .completed-task-head .run-check { display: none; }
+
+/* opened step detail sits in a light inset card, indented onto the rail */
+.expanded-group .task-node.expanded .run-tool-pane,
+.expanded-group .task-node.expanded .run-reasoning-pane,
+.expanded-group .task-node.expanded .run-model-pane {
+  padding-left: 0;
+  padding-right: 0;
+}
+.expanded-group .task-node.expanded .run-card-head.completed-task-head {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 11px;
+}
