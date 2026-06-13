@@ -17,8 +17,18 @@ def evidence_retriever(query: str, manifest_path: str, source_ids: list[str] | N
     path = resolve_path(manifest_path)
     if not path.exists():
         return json.dumps({"chunks": [], "error": f"manifest not found: {manifest_path}"}, ensure_ascii=False)
+    if not path.is_file():
+        return json.dumps(
+            {"chunks": [], "error": f"manifest_path is not a file (expected evidence_manifest.json): {manifest_path}"},
+            ensure_ascii=False,
+        )
 
-    manifest = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return json.dumps({"chunks": [], "error": f"failed to read manifest {manifest_path}: {exc}"}, ensure_ascii=False)
+    if not isinstance(manifest, dict):
+        return json.dumps({"chunks": [], "error": f"manifest is not a JSON object: {manifest_path}"}, ensure_ascii=False)
     allowed = set(source_ids or [])
     candidates = []
     for source in manifest.get("sources", []):
