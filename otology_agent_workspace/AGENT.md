@@ -102,8 +102,8 @@ Call `schema_builder` with:
 
 Rules:
 
-- `schema_builder` writes `draft_schema.py`, following the `schema_plan` in the evidence manifest as the blueprint for entities and relations.
-- `schema_builder` must call `schema_validator`.
+- `schema_builder` returns the full schema source in `schema_text`, following the `schema_plan` in the evidence manifest as the blueprint for entities and relations. The harness/backend persists it to `draft_schema.py`.
+- `schema_builder` must call `schema_validator` on its `schema_text`.
 - Do not create instances or final answers.
 - Do not perform web search unless Step 2 marked evidence insufficient.
 
@@ -144,14 +144,15 @@ Only after schema confirmation, call `data_extractor` with:
 ```json
 {
   "schema_path": "<confirmed_schema.py>",
+  "instances_path": "<run>/data/instances.json",
+  "schema_outline": [{"concept": "...", "primitive_fields": ["..."], "relation_fields": [{"name": "...", "target": "..."}]}],
   "sources": [],
   "evidence_manifest_path": "..."
 }
 ```
 
-Expected output files:
+`data_extractor` writes `data/instances.json` using the `schema_outline` class/field names verbatim. The harness/backend validates it against the confirmed schema and derives:
 
-- `data/instances.json`
 - `data/facts.csv`
 - `data/relations.csv`
 - `intermediate/extraction_report.json`

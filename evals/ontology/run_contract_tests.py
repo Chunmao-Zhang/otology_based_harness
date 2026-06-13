@@ -24,11 +24,16 @@ os.environ.setdefault("HARNESS_ROOT", str(ROOT))
 from harness.agents.registry import AgentRegistry
 from harness.agents.agent_loop import _build_model, _register_ontology_model_profile
 from harness.config import load_config
-from harness.ontology.data_extractor import extract_company_csv
-from harness.ontology.schema_builder import build_draft_schema
-from harness.ontology.schema_judge import judge_schema
+from harness.ontology.data_extractor import (
+    persist_extraction,
+    schema_outline,
+    validate_instances,
+)
+from harness.ontology.schema_builder import write_draft_schema
+from harness.ontology.schema_judge import mechanical_schema_check
 from harness.ontology.schema_service import confirm_schema, schema_to_form
 from harness.ontology.schema_utils import parse_schema
+from harness.ontology.solver import read_solver_result
 from harness.ontology.workspace_builder import build_workspace
 from harness.tools.registry import get_tools_for_agent
 from harness.tools.web_search import _load_serper_config, web_search
@@ -38,11 +43,8 @@ from otology_agent_workspace.utils.evidence_manifest_writer import evidence_mani
 from otology_agent_workspace.utils.problem_clarifier_contract import validate_problem_clarifier_output, validate_problem_clarifier_output_json
 from otology_agent_workspace.tools.schema_validator import schema_validator
 from otology_agent_workspace.utils.schema_service_tool import schema_confirm as schema_confirm_tool, schema_to_form as schema_to_form_tool
-from otology_agent_workspace.utils.schema_draft_builder_tool import schema_draft_builder
 from otology_agent_workspace.tools.source_reader import source_reader
-from otology_agent_workspace.utils.data_extract_company_csv import data_extract_company_csv
 from otology_agent_workspace.utils.workspace_builder_tool import workspace_builder_tool
-from otology_agent_workspace.utils.workspace_solver_tool import workspace_solver_tool
 
 
 def main() -> int:
@@ -145,14 +147,16 @@ def check_workspace_tools() -> None:
     data = registry.get("data_extractor")
     data_tools = {tool.name for tool in get_tools_for_agent(data, data.workspace, str(ROOT))}
     assert "data_extract_company_csv" not in data_tools
+    # write_file is a built-in execution-layer tool, granted via the allow-list.
+    assert "write_file" in data.tools.allow
     builder = registry.get("schema_builder")
     builder_tools = {tool.name for tool in get_tools_for_agent(builder, builder.workspace, str(ROOT))}
     assert "schema_draft_builder" not in builder_tools
-    assert "write_file" not in builder_tools
     solver = registry.get("workspace_solver")
     solver_tools = {tool.name for tool in get_tools_for_agent(solver, solver.workspace, str(ROOT))}
     assert "workspace_solver_tool" not in solver_tools
     assert "execute_code" in solver_tools
+    assert "write_file" in solver.tools.allow
 
 
 def check_problem_clarifier_contract() -> None:
@@ -235,32 +239,62 @@ def check_schema_service() -> None:
 
 
 def check_schema_builder_and_judger() -> None:
-    manifest_path = RUN_DIR / "intermediate" / "evidence_manifest.json"
-    if not manifest_path.exists():
-        check_evidence_retriever()
+    # schema_builder backend only persists + validates LLM-produced schema text.
     draft_path = RUN_DIR / "concepts" / "draft_schema.py"
-    built = build_draft_schema("美国有哪些数据分析公司", manifest_path, draft_path)
+    schema_text = (SCHEMA_UTILS / "valid_company_schema.py").read_text(encoding="utf-8")
+    built = write_draft_schema(schema_text, draft_path)
     assert built["valid"] is True, built
-    judged = judge_schema("美国有哪些数据分析公司", schema_path=draft_path)
-    assert judged["answerable"] is True, judged
-    bad = judge_schema("美国有哪些数据分析公司", schema_path=SCHEMA_UTILS / "unanswerable_company_schema.py")
-    assert bad["answerable"] is False
-    assert any("country" in item for item in bad["missing_requirements"])
+    assert draft_path.exists()
+
+    empty = write_draft_schema("", RUN_DIR / "concepts" / "empty_schema.py")
+    assert empty["valid"] is False, empty
+
+    # schema_judge backend only reports structural facts (no domain heuristics).
+    report = mechanical_schema_check(schema_path=draft_path)
+    assert report["valid"] is True, report
+    assert "Company" in report["entities"]
+    assert report["relation_count"] >= 1
+
+    bad = mechanical_schema_check(schema_path=SCHEMA_UTILS / "invalid_missing_id.py")
+    assert bad["valid"] is False, bad
 
 
 def check_data_workspace_solver_files() -> None:
     schema_path = RUN_DIR / "concepts" / "confirmed_schema.py"
     if not schema_path.exists():
         confirm_schema(SCHEMA_UTILS / "valid_company_schema.py", schema_path)
-    extracted = extract_company_csv(schema_path, TEST_DATA / "company_sample.csv", RUN_DIR)
+
+    # schema_outline exposes the exact class/field names the extractor must use.
+    outline = schema_outline(schema_path)
+    concepts = {entry["concept"] for entry in outline}
+    assert {"Company", "Industry"} <= concepts, outline
+
+    # Instances the data_extractor agent would write, keyed by schema class names.
+    instances = {
+        "Company": [
+            {"_id": "palantir", "name": "Palantir", "country": "United States",
+             "operates_in_industry": ["data_analytics"], "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        ],
+        "Industry": [
+            {"_id": "data_analytics", "name": "Data Analytics", "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        ],
+    }
+
+    # validate_instances must accept schema-conformant data and reject drift.
+    assert validate_instances(instances, schema_path)["ok"], validate_instances(instances, schema_path)
+    drifted = {"Organization": [{"_id": "x", "name": "X"}]}
+    assert validate_instances(drifted, schema_path)["ok"] is False
+
+    extracted = persist_extraction(instances, schema_path, RUN_DIR)
     assert extracted["ok"], extracted
 
-    instances = json.loads(Path(extracted["instances_path"]).read_text(encoding="utf-8"))
     ids = {item["_id"] for rows in instances.values() for item in rows}
     with open(extracted["relations_path"], "r", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            assert row["subject"] in ids
-            assert row["object"] in ids
+        rows = list(csv.DictReader(f))
+    assert rows, "expected at least one relation row"
+    for row in rows:
+        assert row["subject"] in ids
+        assert row["object"] in ids
 
     manifest = build_workspace(
         RUN_DIR,
@@ -278,26 +312,19 @@ def check_data_workspace_solver_files() -> None:
     assert spec.loader is not None
     spec.loader.exec_module(module)
     summary = module.summarize_instances(module.load_instances(RUN_DIR))
-    solver_result = {
-        "question": "美国有哪些数据分析公司",
-        "summary": summary,
-        "source_files": ["data/instances.json", "data/facts.csv", "data/relations.csv"],
-        "executed_script": "src/main.py",
-    }
-    solver_path = RUN_DIR / "intermediate/solver_result.json"
-    solver_path.write_text(json.dumps(solver_result, ensure_ascii=False, indent=2), encoding="utf-8")
     assert summary["Company"] >= 1
-    assert solver_result["executed_script"].startswith("src/")
 
-    solved = json.loads(workspace_solver_tool.invoke({
-        "question": "美国有哪些数据分析公司",
-        "workspace_dir": str(RUN_DIR),
-    }))
-    assert solved["ok"] is True, solved
-    assert Path(solved["executed_script"]).resolve() == (RUN_DIR / "src" / "solve.py").resolve()
-    assert (RUN_DIR / "intermediate/solver_result.json").exists()
-    assert {Path(path).name for path in solved["source_files"]} == {"instances.json", "facts.csv", "relations.csv"}
-    assert any(item["name"] == "Palantir" for item in solved["companies"])
+    # solver backend only reads back the agent-written solver_result.json.
+    missing_dir = ONTOLOGY_RUNS / "contract_no_solver"
+    if missing_dir.exists():
+        shutil.rmtree(missing_dir)
+    assert read_solver_result(missing_dir)["ok"] is False
+    solver_result = {"ok": True, "answer": "Palantir", "result": ["Palantir"]}
+    (RUN_DIR / "intermediate/solver_result.json").write_text(
+        json.dumps(solver_result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    read_back = read_solver_result(RUN_DIR)
+    assert read_back["ok"] is True and read_back["answer"] == "Palantir", read_back
 
 
 def check_web_search_cost_config() -> None:
@@ -351,23 +378,21 @@ def check_new_workspace_tools() -> None:
     }))
     assert confirmed["ok"] is True
 
-    draft = json.loads(schema_draft_builder.invoke({
-        "question": "美国有哪些数据分析公司",
-        "evidence_manifest_path": str(manifest_path),
-        "output_path": "workspaces/ontology_coordinator/schemas/draft_schema.py",
-    }))
-    assert draft["ok"] is True
-    assert "runs/ontology_workspace_runs" in draft["schema_path"]
-
     tool_run = ONTOLOGY_RUNS / "tool_run"
     if tool_run.exists():
         shutil.rmtree(tool_run)
 
-    extracted = json.loads(data_extract_company_csv.invoke({
-        "schema_path": str(confirmed_path),
-        "csv_path": str(TEST_DATA / "company_sample.csv"),
-        "run_dir": str(tool_run),
-    }))
+    # The data_extractor agent writes instances.json; the backend persists facts/relations.
+    instances = {
+        "Company": [
+            {"_id": "palantir", "name": "Palantir", "country": "United States",
+             "operates_in_industry": ["data_analytics"], "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        ],
+        "Industry": [
+            {"_id": "data_analytics", "name": "Data Analytics", "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        ],
+    }
+    extracted = persist_extraction(instances, confirmed_path, tool_run)
     assert extracted["ok"] is True
 
     built = json.loads(workspace_builder_tool.invoke({
@@ -378,13 +403,6 @@ def check_new_workspace_tools() -> None:
         "relations_path": extracted["relations_path"],
     }))
     assert built["ok"] is True
-
-    solved = json.loads(workspace_solver_tool.invoke({
-        "question": "美国有哪些数据分析公司",
-        "workspace_dir": str(tool_run),
-    }))
-    assert solved["ok"] is True
-    assert solved["executed_script"].endswith("/src/solve.py")
 
 
 def check_web_search_scenarios() -> None:

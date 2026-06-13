@@ -15,7 +15,8 @@
     "serper": {
       "api_key": "a5699d2fdabc196a22b19853e4f69c0234d918b3",
       "default_num_results": 3,
-      "max_results_per_call": 3
+      "max_results_per_call": 3,
+      "max_searches_per_run": 8
     }
   },
   "defaults": {
@@ -86,6 +87,7 @@
       "prompt": "otology_agent_workspace/subagent_worksapce/evidence_collector/AGENT.md",
       "tools": {
         "allow": [
+          "write_todos",
           "source_reader",
           "web_search",
           "evidence_retriever"
@@ -130,6 +132,7 @@
       "prompt": "otology_agent_workspace/subagent_worksapce/data_extractor/AGENT.md",
       "tools": {
         "allow": [
+          "write_file",
           "source_reader",
           "web_search",
           "evidence_retriever"
@@ -144,6 +147,7 @@
       "workspace": "otology_agent_workspace/subagent_worksapce/workspace_solver",
       "tools": {
         "allow": [
+          "write_file",
           "execute_code"
         ],
         "deny": []

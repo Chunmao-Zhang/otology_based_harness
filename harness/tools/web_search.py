@@ -48,6 +48,24 @@ def web_search(query: str, num_results: int = 3) -> str:
         )
 
     service_cfg = _load_serper_config()
+
+    budget = int(service_cfg.get("max_searches_per_run", 8) or 8)
+    used = _distinct_searches_used()
+    if used >= budget:
+        return json.dumps(
+            {
+                "query": query,
+                "results": [],
+                "budget_exhausted": True,
+                "note": (
+                    f"Web search budget for this run is exhausted ({used}/{budget} distinct "
+                    "searches used). Reuse the evidence already persisted in "
+                    "intermediate/web_evidence/ instead of searching again."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     api_key = os.environ.get("SERPER_API_KEY", "") or service_cfg.get("api_key", "")
     if not api_key:
         return json.dumps({"error": "SERPER_API_KEY not set"}, ensure_ascii=False)
@@ -119,6 +137,13 @@ def _read_cache(web_dir: Path) -> dict:
     cache.setdefault("queries", {})
     cache.setdefault("next_id", 1)
     return cache
+
+
+def _distinct_searches_used() -> int:
+    web_dir = _web_evidence_dir()
+    if web_dir is None or not web_dir.exists():
+        return 0
+    return len(_read_cache(web_dir).get("queries", {}))
 
 
 def _cached_results(query: str) -> list[dict] | None:

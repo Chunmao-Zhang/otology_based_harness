@@ -20,8 +20,51 @@ Your entire assistant message must be one JSON object.
 ```json
 {
   "schema_path": ".../confirmed_schema.py",
+  "instances_path": ".../data/instances.json",
+  "schema_outline": [
+    {"concept": "<EntityClassName>", "primitive_fields": ["..."], "relation_fields": [{"name": "...", "target": "..."}]}
+  ],
   "sources": [],
   "evidence_manifest_path": "..."
+}
+```
+
+A `correction` object may also be present on a retry; when it is, obey it
+exactly and rewrite `instances.json` to match the listed `required_concepts`.
+
+## Required Flow
+
+1. Read the confirmed schema and the evidence manifest.
+2. Build the instances collection: one key per entity class in `schema_outline`,
+   each mapping to a list of instance objects. Use the `concept` names and
+   `primitive_fields`/`relation_fields` from `schema_outline` verbatim as the
+   JSON keys — do not rename, translate, or invent keys.
+3. Write it to the run's `data/instances.json` with `write_file` (use the
+   `instances_path` from the input when provided). Write the complete, final
+   collection to that exact path in a single `write_file` call. `write_file`
+   cannot overwrite an existing file, so get it right in one write: never write
+   a partial or placeholder `instances.json` first. If you discover a mistake
+   after `instances.json` already exists, write the COMPLETE corrected
+   collection to `data/instances_final.json` in a single `write_file` call (the
+   harness promotes the best conforming file). Use the path given in the
+   `correction.instances_path` when a retry provides one. Never write empty
+   lists.
+4. Return the output JSON below. The harness/backend derives `facts.csv`,
+   `relations.csv`, and `extraction_report.json` from your `instances.json` and
+   the confirmed schema, so you only write `instances.json`.
+
+## Instance Object Shape
+
+Each instance object must use:
+
+```json
+{
+  "_id": "<stable id used by relations>",
+  "_concept": "<EntityClassName>",
+  "<primitive_field>": "<value>",
+  "<relation_field>": ["<target _id>"],
+  "source_refs": ["<source_id>"],
+  "confidence": 0.9
 }
 ```
 
@@ -32,25 +75,27 @@ Return only valid JSON:
 ```json
 {
   "instances_path": ".../data/instances.json",
-  "facts_path": ".../data/facts.csv",
-  "relations_path": ".../data/relations.csv",
-  "extraction_report_path": ".../intermediate/extraction_report.json"
+  "instance_counts": {"<EntityClassName>": 0}
 }
 ```
 
 ## Allowed Tools
 
+- `write_file`
 - `source_reader`
 - `evidence_retriever`
 - `web_search`
 
 ## Rules
 
-- Use only the confirmed schema.
-- Write extracted data through the harness execution layer, not by adding ad hoc fields to the schema.
+- Use only the confirmed schema. The top-level keys in `instances.json` must be
+  the schema's entity class names; per-instance fields must be the schema's
+  declared fields.
 - Do not add fields that are not in the schema.
-- Relation object ids must refer to existing instances.
-- Include `source_refs` and `confidence` where possible. `source_refs` must use the `source_id` values registered in the evidence manifest.
+- Relation field values are lists of `_id` strings that refer to existing
+  instances you also emit.
+- Include `source_refs` and `confidence` where possible. `source_refs` must use
+  the `source_id` values registered in the evidence manifest.
 
 ## Evidence Reuse and Supplementary Search
 

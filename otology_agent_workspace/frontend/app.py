@@ -34,11 +34,15 @@ from harness.ontology.schema_service import (
     generate_schema_from_form,
     schema_to_form,
 )
-from harness.ontology.data_extractor import extract_company_csv
-from harness.ontology.schema_builder import build_draft_schema
-from harness.ontology.schema_judge import judge_schema
+from harness.ontology.data_extractor import (
+    persist_extraction,
+    schema_outline,
+    validate_instances,
+)
+from harness.ontology.schema_builder import write_draft_schema
+from harness.ontology.schema_judge import mechanical_schema_check
 from harness.ontology.schema_utils import parse_schema
-from harness.ontology.solver import solve_company_workspace
+from harness.ontology.solver import read_solver_result
 from harness.ontology.workspace_builder import build_workspace
 
 AGENT_ID = "ontology_coordinator"
@@ -102,13 +106,9 @@ TOOL_ACTIVITY_TEXT = {
     "evidence_retriever": "Retrieving relevant evidence snippets.",
     "web_search": "Looking up supplemental public evidence.",
     "schema_validator": "Validating schema entities, fields, and relations.",
-    "schema_draft_builder": "Preparing the draft schema.",
-    "evidence_manifest_writer": "Saving the evidence manifest.",
     "write_todos": "Planning the current processing step.",
+    "write_file": "Saving the current step's output.",
     "task": "Running the specialist worker for this step.",
-    "data_extract_company_csv": "Extracting structured records from tabular evidence.",
-    "workspace_builder_tool": "Preparing the executable answer workspace.",
-    "workspace_solver_tool": "Running the answer workflow.",
     "execute_code": "Executing answer code and reading the result.",
 }
 
@@ -258,6 +258,12 @@ def session_run_id(session: dict[str, Any]) -> str:
 
 def session_run_dir(session: dict[str, Any]) -> Path:
     return RUNS_DIR / session_run_id(session)
+
+
+def vrun_for(run_dir: Path) -> str:
+    """Virtual (root-relative) run path passed to subagents so write_file /
+    execute_code / ontology tools resolve under the harness root."""
+    return f"/runs/ontology_workspace_runs/{Path(run_dir).name}"
 
 
 def run_dir_for_session(session_id: str) -> Path | None:
@@ -903,6 +909,34 @@ def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
     return final_content
 
 
+def _accumulate_stream(chunk: Any, thinking_buf: str, output_buf: str) -> tuple[str, str]:
+    """Fold one streamed model chunk into the live thinking/output buffers.
+
+    DeepSeek thinking-mode streams incremental ``reasoning_content`` deltas on
+    ``additional_kwargs`` (append) and the answer text on ``chunk.content``. The
+    latter may arrive either as incremental deltas or as a cumulative snapshot,
+    so we detect which and either append or replace to avoid duplication.
+    """
+    kwargs = getattr(chunk, "additional_kwargs", None) or {}
+    if isinstance(kwargs, dict):
+        reasoning_inc = kwargs.get("reasoning_content")
+        if isinstance(reasoning_inc, str) and reasoning_inc:
+            thinking_buf += reasoning_inc
+        content_kw = kwargs.get("content")
+        if isinstance(content_kw, str) and content_kw:
+            output_buf += content_kw
+            return thinking_buf, output_buf
+    text = getattr(chunk, "content", "")
+    if isinstance(text, list):
+        text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+    if isinstance(text, str) and text:
+        if output_buf and text.startswith(output_buf):
+            output_buf = text  # cumulative snapshot
+        else:
+            output_buf += text  # incremental delta
+    return thinking_buf, output_buf
+
+
 def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit) -> str:
     from langchain_core.messages import HumanMessage
 
@@ -919,17 +953,51 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
     emit({"type": "stage", "stage": "clarify", "status": "running"})
 
     final_content = ""
-    config = {"configurable": {"thread_id": f"{thread_id}:clarify" or "clarify"}}
+    config = {
+        "configurable": {"thread_id": f"{thread_id}:clarify" or "clarify"},
+        "recursion_limit": 120,
+    }
+    thinking_buf = ""
+    output_buf = ""
+    last_step_key: str | None = None
+    last_emit_at = 0.0
+    last_emit_len = 0
+
+    def push_stream(force: bool = False) -> None:
+        nonlocal last_emit_at, last_emit_len
+        now = time.monotonic()
+        size = len(thinking_buf) + len(output_buf)
+        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
+            return
+        last_emit_at = now
+        last_emit_len = size
+        emit({"type": "stream", "stage": "clarify", "thinking": thinking_buf, "output": output_buf})
+
     for item in agent.stream(
         {"messages": [HumanMessage(content=payload)]},
         config=config,
-        stream_mode=["values"],
+        stream_mode=["messages", "values"],
         subgraphs=True,
     ):
         if not isinstance(item, tuple) or len(item) != 3:
             continue
-        namespace, _mode, data = item
-        if namespace != ():
+        namespace, mode, data = item
+
+        if mode == "messages":
+            chunk, meta = data
+            if meta.get("langgraph_node") != "model":
+                continue
+            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
+            if step_key != last_step_key:
+                last_step_key = step_key
+                thinking_buf = ""
+                output_buf = ""
+                last_emit_len = 0
+            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
+            push_stream()
+            continue
+
+        if mode != "values" or namespace != ():
             continue
         messages = data.get("messages", []) if isinstance(data, dict) else []
         if not messages:
@@ -942,6 +1010,7 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
             content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
         if content:
             final_content = content
+            push_stream(force=True)
             emit({"type": "activity", "message": model_activity("clarify", content)})
     return final_content
 
@@ -962,7 +1031,7 @@ def run_subagent_json(
     thread_id: str,
     run_dir: Path,
     emit,
-    max_tool_calls: int = 18,
+    max_tool_calls: int = 48,
     stage_id: str = "",
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
@@ -977,23 +1046,72 @@ def run_subagent_json(
     emitted_model_output = ""
     emitted_tools: set[str] = set()
     tool_call_count = 0
-    config = {"configurable": {"thread_id": f"{thread_id}:{agent_id}"}}
+    config = {
+        "configurable": {"thread_id": f"{thread_id}:{agent_id}"},
+        "recursion_limit": 120,
+    }
+
+    # Live token streaming state (per model turn).
+    thinking_buf = ""
+    output_buf = ""
+    last_step_key: str | None = None
+    last_emit_at = 0.0
+    last_emit_len = 0
+
+    def push_stream(force: bool = False) -> None:
+        nonlocal last_emit_at, last_emit_len
+        if not stage_id:
+            return
+        now = time.monotonic()
+        size = len(thinking_buf) + len(output_buf)
+        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
+            return
+        last_emit_at = now
+        last_emit_len = size
+        emit({
+            "type": "stream",
+            "stage": stage_id,
+            "thinking": thinking_buf,
+            "output": output_buf,
+        })
+
     for item in agent.stream(
         {"messages": [HumanMessage(content=json.dumps({
             **payload,
             "_ui_output_contract": USER_VISIBLE_OUTPUT_CONTRACT,
         }, ensure_ascii=False))]},
         config=config,
-        stream_mode=["values"],
+        stream_mode=["messages", "values"],
         subgraphs=True,
     ):
         if not isinstance(item, tuple) or len(item) != 3:
             continue
-        _namespace, _mode, data = item
+        namespace, mode, data = item
+
+        if mode == "messages":
+            chunk, meta = data
+            if meta.get("langgraph_node") != "model":
+                continue
+            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
+            if step_key != last_step_key:
+                # New model turn: reset the live buffers so the card shows the
+                # reasoning/output of the step that is currently running.
+                last_step_key = step_key
+                thinking_buf = ""
+                output_buf = ""
+                last_emit_len = 0
+            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
+            push_stream()
+            continue
+
+        if mode != "values":
+            continue
         messages = data.get("messages", []) if isinstance(data, dict) else []
         if not messages:
             continue
         last = messages[-1]
+        if getattr(last, "type", "") in ("ai", "tool"):
+            push_stream(force=True)
         for call in getattr(last, "tool_calls", None) or []:
             tool_name = str(call.get("name", ""))
             tool_call_count += 1
@@ -1046,21 +1164,6 @@ def merge_sources(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return merged
 
 
-def schema_plan_for(question: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    source_id = sources[0].get("source_id", "web_001") if sources else "user_question"
-    return [
-        {"kind": "entity", "name": "Company", "source_id": source_id, "fields": ["name", "country"]},
-        {"kind": "entity", "name": "Industry", "source_id": source_id, "fields": ["name"]},
-        {
-            "kind": "relation",
-            "name": "operates_in_industry",
-            "head": "Company",
-            "tail": "Industry",
-            "source_id": source_id,
-        },
-    ]
-
-
 def write_evidence_manifest(run_dir: Path, question: str, payload: dict[str, Any], upload_paths: list[str]) -> Path:
     manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1082,8 +1185,8 @@ def write_evidence_manifest(run_dir: Path, question: str, payload: dict[str, Any
         source.get("source_kind") == "web" for source in sources
     ) or not upload_paths
     schema_plan = payload.get("schema_plan")
-    if not isinstance(schema_plan, list) or not schema_plan:
-        schema_plan = schema_plan_for(question, sources)
+    if not isinstance(schema_plan, list):
+        schema_plan = []
     manifest = {
         "question": question,
         "sources": sources,
@@ -1176,54 +1279,113 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
     )
     manifest_path = write_evidence_manifest(run_dir, question, evidence_payload, upload_paths)
     evidence = read_json(manifest_path)
+    vrun = vrun_for(run_dir)
+    manifest_vpath = f"{vrun}/intermediate/evidence_manifest.json"
+
+    draft_path = run_dir / "concepts" / "draft_schema.py"
+    builder_base = {
+        "question": question,
+        "sources": evidence.get("sources", []),
+        "evidence_manifest_path": manifest_vpath,
+    }
 
     emit({"type": "stage", "stage": "schema_build", "status": "running"})
-    builder_payload = run_subagent_json(
-        "schema_builder",
-        {
-            "question": question,
-            "sources": evidence.get("sources", []),
-            "evidence_manifest_path": str(manifest_path),
-        },
-        session["thread_id"],
-        run_dir,
-        emit,
-        stage_id="schema_build",
-    )
-    draft_path = run_dir / "concepts" / "draft_schema.py"
+    # The schema builder must actually write concepts/draft_schema.py via the
+    # execution layer; it occasionally returns without doing so, so retry once
+    # with an explicit instruction before giving up.
+    builder_payload: dict[str, Any] = {}
+    for attempt in range(2):
+        payload = dict(builder_base)
+        if attempt > 0:
+            payload["correction"] = {
+                "message": (
+                    "You did not produce concepts/draft_schema.py. Write the schema "
+                    "to that path using write_file, then call schema_validator."
+                ),
+            }
+        builder_payload = run_subagent_json(
+            "schema_builder",
+            payload,
+            session["thread_id"],
+            run_dir,
+            emit,
+            stage_id="schema_build",
+        )
+        schema_text = builder_payload.get("schema_text")
+        if isinstance(schema_text, str) and schema_text.strip() and not draft_path.exists():
+            result = write_draft_schema(schema_text, draft_path)
+            if not result.get("valid", False):
+                return "Schema construction failed validation; please retry."
+        if draft_path.exists():
+            break
     if not draft_path.exists():
-        build_draft_schema(question, manifest_path, draft_path)
-    if not draft_path.exists() and builder_payload.get("schema_path"):
-        source = Path(str(builder_payload["schema_path"]))
-        if source.exists():
-            draft_path.parent.mkdir(parents=True, exist_ok=True)
-            draft_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        return "Schema construction did not produce a draft schema; please retry."
 
     emit({"type": "stage", "stage": "schema_judge", "status": "running"})
     judger_payload = run_subagent_json(
         "schema_judger",
-        {"question": question, "schema_path": str(draft_path)},
+        {"question": question, "schema_path": f"{vrun}/concepts/draft_schema.py"},
         session["thread_id"],
         run_dir,
         emit,
         stage_id="schema_judge",
     )
-    judgment = judger_payload if "answerable" in judger_payload else judge_schema(question, schema_path=draft_path)
-    if not judgment.get("answerable", False):
-        deterministic_judgment = judge_schema(question, schema_path=draft_path)
-        if deterministic_judgment.get("answerable", False):
-            judgment = deterministic_judgment
+    judgment = judger_payload if "answerable" in judger_payload else {"answerable": False}
 
     emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
     return schema_confirmation_message(run_dir, judgment, evidence)
 
 
-def choose_csv_source(run_dir: Path, upload_paths: list[str]) -> Path:
-    for item in upload_paths:
-        path = Path(item)
-        if path.suffix.lower() == ".csv" and path.exists():
-            return path
-    return ROOT / "test_data" / "ontology" / "company_sample.csv"
+def _instance_rows(data: Any) -> int:
+    if not isinstance(data, dict):
+        return 0
+    return sum(len(v) for v in data.values() if isinstance(v, list))
+
+
+def select_best_instances(
+    instances_path: Path, confirmed_path: Path
+) -> dict[str, Any] | None:
+    """Pick the best instances payload across the canonical file and any sibling
+    scratch files, then promote it back to data/instances.json.
+
+    The data_extractor only has `write_file`, which refuses to overwrite an
+    existing file, so when its first instances.json fails schema validation it
+    writes the corrected payload to a new path (e.g. instances_final.json,
+    instances_v2.json). We therefore consider every instances*.json file and
+    prefer the schema-conforming one with the most rows; if none conform we fall
+    back to the most populated payload so the correction retry still has data."""
+    data_dir = instances_path.parent
+    if not data_dir.exists():
+        return None
+    best_valid: dict[str, Any] | None = None
+    best_valid_rows = -1
+    best_any: dict[str, Any] | None = None
+    best_any_rows = -1
+    for path in sorted(data_dir.glob("instances*.json")):
+        try:
+            candidate = read_json(path)
+        except Exception:
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        rows = _instance_rows(candidate)
+        if rows <= 0:
+            continue
+        if rows > best_any_rows:
+            best_any, best_any_rows = candidate, rows
+        try:
+            conforms = validate_instances(candidate, confirmed_path).get("ok", False)
+        except Exception:
+            conforms = False
+        if conforms and rows > best_valid_rows:
+            best_valid, best_valid_rows = candidate, rows
+    chosen = best_valid if best_valid is not None else best_any
+    if chosen is None:
+        return None
+    instances_path.write_text(
+        json.dumps(chosen, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return chosen
 
 
 def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
@@ -1236,25 +1398,73 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
             return "Schema confirmation failed; please edit the schema and try again."
     manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
     evidence = read_json(manifest_path) if manifest_path.exists() else {"sources": []}
+    vrun = vrun_for(run_dir)
+    manifest_vpath = f"{vrun}/intermediate/evidence_manifest.json"
+    instances_path = run_dir / "data" / "instances.json"
+
+    extract_payload = {
+        "schema_path": f"{vrun}/concepts/confirmed_schema.py",
+        "instances_path": f"{vrun}/data/instances.json",
+        "schema_outline": schema_outline(confirmed_path),
+        "sources": evidence.get("sources", []),
+        "evidence_manifest_path": manifest_vpath,
+    }
 
     emit({"type": "stage", "stage": "extract", "status": "running"})
     run_subagent_json(
         "data_extractor",
-        {
-            "schema_path": str(confirmed_path),
-            "sources": evidence.get("sources", []),
-            "evidence_manifest_path": str(manifest_path),
-        },
+        extract_payload,
         session["thread_id"],
         run_dir,
         emit,
+        max_tool_calls=48,
         stage_id="extract",
     )
-    if not (run_dir / "intermediate" / "extraction_report.json").exists():
-        extract_company_csv(confirmed_path, choose_csv_source(run_dir, upload_paths), run_dir)
+    # The extractor is the most tool-heavy step; retry once if it produced no
+    # instances or instances that do not conform to the confirmed schema. The
+    # extractor cannot overwrite files, so it may have written the conforming
+    # payload to a sibling path; promote the best conforming candidate.
+    instances = select_best_instances(instances_path, confirmed_path)
+    if instances is None:
+        instances = read_json(instances_path) if instances_path.exists() else None
+    validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
+    if not instances or _instance_rows(instances) == 0 or not validation.get("ok"):
+        correction = dict(extract_payload)
+        correction["correction"] = {
+            "message": (
+                "Your previous attempt did not produce a valid, populated "
+                "instances payload. write_file cannot overwrite an existing file, "
+                "so write the COMPLETE corrected collection to a NEW path "
+                "data/instances_final.json in a single write_file call. Use ONLY "
+                "the confirmed schema's exact entity class names as top-level keys "
+                "and ONLY their declared fields (no extra or misspelled fields)."
+            ),
+            "instances_path": f"{vrun}/data/instances_final.json",
+            "required_concepts": validation.get("schema_concepts", []),
+        }
+        run_subagent_json(
+            "data_extractor",
+            correction,
+            session["thread_id"],
+            run_dir,
+            emit,
+            max_tool_calls=48,
+            stage_id="extract",
+        )
+        instances = select_best_instances(instances_path, confirmed_path)
+        if instances is None:
+            instances = read_json(instances_path) if instances_path.exists() else None
+        validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
+    if not instances or _instance_rows(instances) == 0:
+        return "Data extraction did not produce instances; please retry."
+    if not validation.get("ok"):
+        return "Extracted data did not conform to the confirmed schema; please retry."
+    extraction = persist_extraction(instances, confirmed_path, run_dir)
+    if not extraction.get("ok"):
+        return "Failed to persist extracted data; please retry."
 
     emit({"type": "stage", "stage": "solve", "status": "running"})
-    workspace = build_workspace(
+    build_workspace(
         run_dir,
         confirmed_path,
         run_dir / "data" / "instances.json",
@@ -1263,16 +1473,18 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
     )
     solver_payload = run_subagent_json(
         "workspace_solver",
-        {"question": question, "schema_path": str(confirmed_path), "workspace_dir": str(run_dir)},
+        {
+            "question": question,
+            "schema_path": f"{vrun}/concepts/confirmed_schema.py",
+            "workspace_dir": vrun,
+        },
         session["thread_id"],
         run_dir,
         emit,
+        max_tool_calls=48,
         stage_id="solve",
     )
-    solver_path = run_dir / "intermediate" / "solver_result.json"
-    solver = read_json(solver_path) if solver_path.exists() else {}
-    if not solver.get("ok"):
-        solver = solve_company_workspace(question, run_dir)
+    solver = read_solver_result(run_dir)
 
     emit({"type": "stage", "stage": "solve", "status": "done"})
     if solver_payload.get("_raw") and solver.get("ok"):
@@ -1490,6 +1702,9 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                 final = run_real_agent(agent_input, session["thread_id"], session_run_dir(session), emit)
             emit({"type": "_done", "final": final})
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a friendly error.
+            import traceback
+            traceback.print_exc()
+            sys.stderr.flush()
             emit({"type": "_error", "error": f"{type(exc).__name__}: {exc}"})
 
     future = loop.run_in_executor(EXECUTOR, run_agent_thread)
@@ -1552,6 +1767,17 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
             if event["type"] == "_error":
                 run_error = "Something went wrong during the run. Please retry later."
                 break
+
+            if event["type"] == "stream":
+                # Live token stream for the active stage. Ephemeral: forwarded to
+                # the client for the live card but not persisted to history.
+                await websocket.send_text(json.dumps({
+                    "type": "stream",
+                    "stage": event.get("stage", ""),
+                    "thinking": redact_paths(event.get("thinking", "")),
+                    "output": redact_paths(event.get("output", "")),
+                }, ensure_ascii=False))
+                continue
 
             if event["type"] == "activity":
                 session = STORE.get(session_id)

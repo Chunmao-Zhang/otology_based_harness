@@ -72,6 +72,7 @@
     activeClarificationMessageId: '',
     expandedStageCards: new Set(),
     forceScroll: false,
+    liveStream: {},
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -344,16 +345,28 @@
       return;
     }
     if (payload.type === 'run_start') {
+      state.liveStream = {};
       setRunning(true, 'The agent is working on your request…');
       return;
     }
     if (payload.type === 'stage') {
       if (payload.stages) state.stages = payload.stages;
+      if (payload.status === 'done' && payload.stage) delete state.liveStream[payload.stage];
       renderStageStrip();
       renderProgressTab();
       renderMessages({ preserveScroll: true });
       if (payload.status === 'running' && payload.detail) {
         el.runDetail.textContent = payload.detail;
+      }
+      return;
+    }
+    if (payload.type === 'stream') {
+      if (payload.stage) {
+        state.liveStream[payload.stage] = {
+          thinking: payload.thinking || '',
+          output: payload.output || '',
+        };
+        renderMessages({ preserveScroll: true });
       }
       return;
     }
@@ -377,6 +390,7 @@
       return;
     }
     if (payload.type === 'run_done') {
+      state.liveStream = {};
       setRunning(false);
       renderMessages();
       renderProgressTab();
@@ -730,6 +744,12 @@
         if (message.output) card.output = normalizeActivityText(message.output);
       }
     });
+    // Make sure stages that only have a live token stream still get a card.
+    Object.keys(state.liveStream || {}).forEach((stageId) => {
+      if (!cards.has(stageId) && (stageById(stageId) || {}).status !== 'pending') {
+        cards.set(stageId, makeStageCard(stageId, (stageById(stageId) || {}).label));
+      }
+    });
     return (state.stages || [])
       .filter((stage) => stage.status !== 'pending' && cards.has(stage.id))
       .map((stage) => {
@@ -738,22 +758,42 @@
           card.status = stage.status || card.status;
         }
         card.title = stage.label || card.title;
+        const live = (state.liveStream || {})[stage.id];
+        if (live && stage.status !== 'done') {
+          if (live.thinking) card.thinking = normalizeActivityText(live.thinking);
+          if (live.output) card.output = normalizeActivityText(live.output);
+        }
         return card;
       });
   }
 
   function renderTaskToolActivity(card) {
-    const items = card.tools.length ? [card.tools[card.tools.length - 1]] : [card.thinking || `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`];
-    return items.map((item) => `
-      <div class="task-tool-card ${escapeHtml(card.status)} tool-float">
-        <div class="task-tool-topline">
-          <span class="task-tool-status">${escapeHtml(card.status === 'done' ? 'Done' : card.status === 'waiting' ? 'Waiting' : 'Processing')}</span>
-          <span class="task-tool-step">Update ${Math.max(card.tools.length, 1)}</span>
-        </div>
-        <strong>${escapeHtml(card.title)}</strong>
-        <p>${formatInline(item)}</p>
-      </div>
-    `).join('');
+    const running = card.status !== 'done' && card.status !== 'waiting';
+    const dots = '<span class="tool-dots"><span></span><span></span><span></span></span>';
+    if (!card.tools.length) {
+      const fallback = card.thinking
+        ? 'Planning the next action…'
+        : `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`;
+      return `
+        <ol class="tool-steps">
+          <li class="tool-step ${running ? 'active' : 'done'}">
+            <span class="tool-step-index">${running ? '' : '✓'}</span>
+            <span class="tool-step-text">${formatInline(fallback)}</span>
+            ${running ? dots : ''}
+          </li>
+        </ol>`;
+    }
+    const lastIndex = card.tools.length - 1;
+    const rows = card.tools.map((item, i) => {
+      const active = i === lastIndex && running;
+      return `
+        <li class="tool-step ${active ? 'active' : 'done'}">
+          <span class="tool-step-index">${active ? '' : '✓'}</span>
+          <span class="tool-step-text">${formatInline(item)}</span>
+          ${active ? dots : ''}
+        </li>`;
+    }).join('');
+    return `<ol class="tool-steps">${rows}</ol>`;
   }
 
   function renderTaskNode(card) {

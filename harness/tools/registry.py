@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import json
+
 from langchain_core.tools import BaseTool
 
 from harness.config.schema import AgentConfig
@@ -16,6 +18,52 @@ from harness.tools.code_executor import execute_code
 from harness.tools.web_search import web_search
 from harness.tools.memory_writer import save_memory
 from harness.tools.workspace_loader import load_workspace_tools
+
+
+def _harden_tool(tool: BaseTool) -> BaseTool:
+    """Wrap a tool so an unexpected exception is returned as an error result
+    instead of propagating and aborting the entire agent run.
+
+    LangGraph's ToolNode re-raises any non-``ToolException`` a tool raises, which
+    tears down the whole graph. Converting failures into a JSON error string lets
+    the model see what went wrong and recover (retry, fix arguments, move on).
+    """
+    func = getattr(tool, "func", None)
+    coroutine = getattr(tool, "coroutine", None)
+    updates: dict[str, object] = {}
+
+    if callable(func):
+        def safe_func(*args, __func=func, __name=tool.name, **kwargs):
+            try:
+                return __func(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - surfaced to the model.
+                return json.dumps(
+                    {"error": f"{__name} failed: {type(exc).__name__}: {exc}"},
+                    ensure_ascii=False,
+                )
+
+        updates["func"] = safe_func
+
+    if callable(coroutine):
+        async def safe_coroutine(*args, __coro=coroutine, __name=tool.name, **kwargs):
+            try:
+                return await __coro(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - surfaced to the model.
+                return json.dumps(
+                    {"error": f"{__name} failed: {type(exc).__name__}: {exc}"},
+                    ensure_ascii=False,
+                )
+
+        updates["coroutine"] = safe_coroutine
+
+    if not updates:
+        return tool
+    try:
+        return tool.model_copy(update=updates)
+    except Exception:  # noqa: BLE001 - fall back to in-place wrapping.
+        for key, value in updates.items():
+            setattr(tool, key, value)
+        return tool
 
 
 # harness 内置基础工具，所有 agent 都可以按需 allow/deny
@@ -80,4 +128,4 @@ def get_tools_for_agent(
         candidates = [name for name in catalog.keys() if name in allow_set]
 
     final = [name for name in candidates if name not in deny]
-    return [catalog[name] for name in final if name in catalog]
+    return [_harden_tool(catalog[name]) for name in final if name in catalog]
