@@ -227,14 +227,20 @@
       try { state.ws.close(); } catch (err) { /* ignore */ }
       state.ws = null;
     }
+    state.wsReady = false;
+    let session = null;
     if (!sessionId) {
       const data = await api('/api/sessions', { method: 'POST' });
-      sessionId = data.session.id;
+      session = data.session || {};
+      sessionId = session.id;
+    } else {
+      const data = await api(`/api/sessions/${sessionId}`);
+      session = data.session || {};
     }
     state.sessionId = sessionId;
     localStorage.setItem('ontology-ui-session', sessionId);
-    state.messages = [];
-    state.stages = [];
+    state.messages = session.messages || [];
+    state.stages = session.stages || [];
     state.uploads = [];
     state.selectedUploads.clear();
     state.activeClarificationMessageId = '';
@@ -335,7 +341,28 @@
     renderMessages();
   }
 
+  function pushOptimisticUserMessage(payload) {
+    if (!payload || payload.type !== 'chat') return '';
+    const content = String(payload.content || '').trim();
+    if (!content) return '';
+    const uploadNames = (payload.upload_ids || [])
+      .map((id) => (state.uploads.find((upload) => upload.id === id) || {}).name)
+      .filter(Boolean);
+    state.messages.push({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      role: 'user',
+      content,
+      uploads: uploadNames,
+      timestamp: new Date().toISOString(),
+    });
+    renderMessages();
+    renderSessionRail();
+    return content;
+  }
+
   async function sendViaHttp(payload) {
+    const optimisticContent = pushOptimisticUserMessage(payload);
+    let skippedOptimisticEcho = false;
     setRunning(true, 'The agent is working on your request…');
     try {
       const data = await api(`/api/chat/${state.sessionId}`, {
@@ -343,7 +370,21 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      (data.events || []).forEach(handleWsEvent);
+      (data.events || []).forEach((event) => {
+        const message = event && event.message;
+        if (
+          optimisticContent
+          && !skippedOptimisticEcho
+          && event.type === 'message'
+          && message
+          && message.role === 'user'
+          && message.content === optimisticContent
+        ) {
+          skippedOptimisticEcho = true;
+          return;
+        }
+        handleWsEvent(event);
+      });
     } catch (err) {
       pushClientError(`Send failed: ${err.message}`);
     } finally {
