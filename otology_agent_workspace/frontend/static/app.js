@@ -76,7 +76,7 @@
     forceScroll: false,
     liveStream: {},
     toolKeys: {},
-    activitySince: 0,
+    runStartedAt: 0,
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -355,7 +355,6 @@
       return;
     }
     if (payload.type === 'stage') {
-      markActivity();
       if (payload.stages) state.stages = payload.stages;
       if (payload.status === 'done' && payload.stage) delete state.liveStream[payload.stage];
       renderStageStrip();
@@ -373,7 +372,6 @@
       return;
     }
     if (payload.type === 'stream') {
-      markActivity();
       if (payload.stage) {
         state.liveStream[payload.stage] = {
           thinking: payload.thinking || '',
@@ -384,7 +382,6 @@
       return;
     }
     if (payload.type === 'activity') {
-      markActivity();
       state.messages.push(payload.message);
       renderMessages({ preserveScroll: true });
       return;
@@ -413,15 +410,11 @@
     }
   }
 
-  // Track the wall-clock of the last sign of life from the agent so the UI can
-  // show a live "elapsed since last update" timer. The backend diagnosis showed
-  // ~97% of run time is model inference between tool calls, during which no
-  // events arrive; a ticking timer makes those long gaps read as "still
-  // working" instead of "frozen".
-  function markActivity() {
-    state.activitySince = Date.now();
-  }
-
+  // Anchor the live timer to when the current working segment started, then let
+  // it climb continuously until the segment ends (a confirmation gate or the
+  // final answer). The backend diagnosis showed ~97% of run time is model
+  // inference; a continuously counting timer makes long steps read as "still
+  // working" rather than "frozen".
   function formatElapsed(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
     if (s < 60) return `${s}s`;
@@ -442,7 +435,9 @@
   }
 
   function setRunning(running, detail) {
-    if (running) markActivity();
+    // Start the clock once, on the transition into a running segment, so it
+    // counts continuously from start to end instead of resetting on each event.
+    if (running && !state.running) state.runStartedAt = Date.now();
     state.running = running;
     el.runIndicator.classList.toggle('active', running);
     el.runDetail.textContent = running ? (detail || '') : '';
@@ -881,7 +876,7 @@
 
     const stepLabel = stepCount > 0 ? `Step ${stepCount}` : '';
     const elapsedBadge = running
-      ? `<span class="work-elapsed" data-since="${state.activitySince || Date.now()}" title="Time since the last update from the agent">${formatElapsed(Date.now() - (state.activitySince || Date.now()))}</span>`
+      ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>`
       : '';
     return `
       <div class="current-tool-card ${escapeHtml(statusClass)}${swapped ? ' tool-swapping' : ''}">
@@ -963,7 +958,7 @@
             <div class="task-node-title">
               <span class="${isWaiting ? 'run-check' : 'run-pulse'}">${isWaiting ? '✓' : ''}</span>
               <span>${isWaiting ? 'Waiting for your confirmation' : 'Agent is working'}</span>
-              ${isRunning ? `<span class="work-elapsed" data-since="${state.activitySince || Date.now()}" title="Time since the last update from the agent">${formatElapsed(Date.now() - (state.activitySince || Date.now()))}</span>` : ''}
+              ${isRunning ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>` : ''}
             </div>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
