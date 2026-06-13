@@ -6020,6 +6020,16 @@ textarea#message-input.chat-input:focus-visible,
   white-space: nowrap;
 }
 
+.schema-review-status.confirmed {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: color-mix(in srgb, var(--success) 80%, #052e16);
+}
+
+.schema-review-status.draft {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .schema-review-copy {
   margin: -2px 0 2px;
   color: var(--ink-muted);
@@ -7275,7 +7285,6 @@ body.modal-open { overflow: hidden; }
 }
 
 .task-node-title .work-elapsed { margin-left: 2px; }
-.current-tool-topline .work-elapsed { height: 22px; }
 
 @keyframes work-elapsed-breathe {
   0%, 100% { opacity: .82; }

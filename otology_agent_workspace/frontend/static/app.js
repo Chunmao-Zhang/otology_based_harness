@@ -614,18 +614,44 @@
       || content.includes('**Entity Definitions**');
   }
 
+  function schemaReviewState() {
+    const confirmStage = (state.stages || []).find((stage) => stage.id === 'confirm_schema');
+    const waiting = !!(confirmStage && confirmStage.status === 'waiting');
+    const confirmed = !!(state.schema && state.schema.status === 'confirmed');
+    if (waiting) {
+      return {
+        statusClass: 'waiting', statusLabel: 'Waiting',
+        heading: 'Review schema before continuing',
+        copy: 'Confirm the entity definitions and relation schema below, or open Schema Studio to edit them.',
+      };
+    }
+    if (confirmed) {
+      return {
+        statusClass: 'confirmed', statusLabel: 'Confirmed',
+        heading: 'Confirmed ontology schema',
+        copy: 'This schema was confirmed and used for data extraction and solving.',
+      };
+    }
+    return {
+      statusClass: 'draft', statusLabel: 'Draft',
+      heading: 'Ontology schema draft',
+      copy: 'Draft schema generated from the evidence.',
+    };
+  }
+
   function schemaPreviewTablesHtml() {
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
+    const view = schemaReviewState();
     if (!entities.length && !relations.length) {
       return `
         <section class="schema-review-card">
           <div class="schema-review-head">
             <div>
               <span class="run-section-label">Schema confirmation</span>
-              <h3>Review schema before continuing</h3>
+              <h3>${escapeHtml(view.heading)}</h3>
             </div>
-            <span class="schema-review-status">Waiting</span>
+            <span class="schema-review-status ${view.statusClass}">${escapeHtml(view.statusLabel)}</span>
           </div>
           <div class="onto-empty">Schema preview is loading.</div>
         </section>
@@ -659,11 +685,11 @@
         <div class="schema-review-head">
           <div>
             <span class="run-section-label">Schema confirmation</span>
-            <h3>Review schema before continuing</h3>
+            <h3>${escapeHtml(view.heading)}</h3>
           </div>
-          <span class="schema-review-status">Waiting</span>
+          <span class="schema-review-status ${view.statusClass}">${escapeHtml(view.statusLabel)}</span>
         </div>
-        <p class="schema-review-copy">Confirm the entity definitions and relation schema below, or open Schema Studio to edit them.</p>
+        <p class="schema-review-copy">${escapeHtml(view.copy)}</p>
         <div class="schema-download-row">
           <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
           <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
@@ -704,10 +730,19 @@
   function renderAssistantContent(message) {
     if (message.clarification) {
       const actions = gateActions(message);
-      return `${analysisCompleteHtml('Problem clarification is ready for confirmation.')}${renderClarificationCard(message.clarification, actions)}`;
+      const detail = actions
+        ? 'Problem clarification is ready for confirmation.'
+        : 'Problem clarification confirmed.';
+      return `${analysisCompleteHtml(detail)}${renderClarificationCard(message.clarification, actions)}`;
     }
     if (isSchemaReviewMessage(message)) {
-      return `${analysisCompleteHtml('Schema analysis is complete. Review the schema below before extraction starts.')}${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
+      const view = schemaReviewState();
+      const detail = view.statusClass === 'waiting'
+        ? 'Schema analysis is complete. Review the schema below before extraction starts.'
+        : (view.statusClass === 'confirmed'
+          ? 'Schema confirmed. It was used for data extraction and solving.'
+          : 'Schema analysis is complete.');
+      return `${analysisCompleteHtml(detail)}${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -875,16 +910,12 @@
     }
 
     const stepLabel = stepCount > 0 ? `Step ${stepCount}` : '';
-    const elapsedBadge = running
-      ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>`
-      : '';
     return `
       <div class="current-tool-card ${escapeHtml(statusClass)}${swapped ? ' tool-swapping' : ''}">
         <div class="current-tool-topline">
           <span class="current-tool-status">${escapeHtml(label)}</span>
           ${stepLabel ? `<span class="tool-step-label">${escapeHtml(stepLabel)}</span>` : ''}
           ${showDots ? '<span class="tool-dots"><span></span><span></span><span></span></span>' : ''}
-          ${elapsedBadge}
         </div>
         <div class="current-tool-main">
           <strong>${escapeHtml(sanitizeDisplayText(title))}</strong>
