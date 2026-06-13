@@ -698,12 +698,16 @@
   }
 
   function buildStageCards(events) {
+    const eventList = events || [];
+    const hasEvents = eventList.length > 0;
     const cards = new Map();
-    let activeStageId = inferActiveStageId();
-    (state.stages || []).filter((stage) => stage.status !== 'pending').forEach((stage) => {
-      cards.set(stage.id, makeStageCard(stage.id, stage.label));
-    });
-    (events || []).forEach((message) => {
+    let activeStageId = hasEvents ? '' : inferActiveStageId();
+    if (!hasEvents) {
+      (state.stages || []).filter((stage) => stage.status !== 'pending').forEach((stage) => {
+        cards.set(stage.id, makeStageCard(stage.id, stage.label));
+      });
+    }
+    eventList.forEach((message) => {
       if (!message || message.kind === 'run_start') return;
       if (message.kind === 'stage' && message.stage) {
         activeStageId = message.stage;
@@ -730,7 +734,9 @@
       .filter((stage) => stage.status !== 'pending' && cards.has(stage.id))
       .map((stage) => {
         const card = cards.get(stage.id);
-        card.status = stage.status || card.status;
+        if (!hasEvents || stage.status === 'done' || stage.id === inferActiveStageId()) {
+          card.status = stage.status || card.status;
+        }
         card.title = stage.label || card.title;
         return card;
       });

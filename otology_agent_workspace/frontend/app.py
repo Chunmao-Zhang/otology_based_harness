@@ -731,6 +731,16 @@ def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
             stage["status"] = status
 
 
+def reset_stages_after(session: dict[str, Any], stage_id: str) -> None:
+    order = [s["id"] for s in PIPELINE_STAGES]
+    if stage_id not in order:
+        return
+    target_index = order.index(stage_id)
+    for stage in session["stages"]:
+        if order.index(stage["id"]) > target_index:
+            stage["status"] = "pending"
+
+
 def get_stage_status(session: dict[str, Any], stage_id: str) -> str:
     for stage in session.get("stages", []):
         if stage.get("id") == stage_id:
@@ -1397,6 +1407,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     continue
                 current = STORE.get(session["id"])
                 set_stage(current, "confirm_problem", "done")
+                reset_stages_after(current, "confirm_problem")
                 current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
                 STORE.save(current)
                 composed = (
@@ -1505,8 +1516,15 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                         )
                         if not already_waiting:
                             set_stage(session, gate, "waiting")
+                            reset_stages_after(session, gate)
                             await websocket.send_text(json.dumps(
-                                {"type": "stage", "stage": gate, "status": "waiting", "label": stage_label(gate)},
+                                {
+                                    "type": "stage",
+                                    "stage": gate,
+                                    "status": "waiting",
+                                    "label": stage_label(gate),
+                                    "stages": session["stages"],
+                                },
                                 ensure_ascii=False,
                             ))
                         key = f"{gate}:waiting"
@@ -1619,6 +1637,7 @@ async def chat_fallback(session_id: str, request: Request):
         else:
             current = STORE.get(session["id"])
             set_stage(current, "confirm_problem", "done")
+            reset_stages_after(current, "confirm_problem")
             current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
             STORE.save(current)
             composed = (
