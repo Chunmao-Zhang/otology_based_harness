@@ -43,6 +43,13 @@
     confirmText: document.getElementById('confirm-text'),
     confirmOk: document.getElementById('confirm-ok'),
     confirmCancel: document.getElementById('confirm-cancel'),
+    clarifyOverlay: document.getElementById('clarify-overlay'),
+    clarifyModalClose: document.getElementById('clarify-modal-close'),
+    clarifyModalProblem: document.getElementById('clarify-modal-problem'),
+    clarifyModalSteps: document.getElementById('clarify-modal-steps'),
+    clarifyModalAddStep: document.getElementById('clarify-modal-add-step'),
+    clarifyModalCancel: document.getElementById('clarify-modal-cancel'),
+    clarifyModalSave: document.getElementById('clarify-modal-save'),
   };
 
   const state = {
@@ -59,6 +66,7 @@
     schemaDirty: false,
     panelTab: 'evidence',
     isComposing: false,
+    activeClarificationMessageId: '',
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -73,7 +81,19 @@
     let safe = escapeHtml(text);
     safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
     safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     return safe;
+  }
+
+  function scrollToLatestMessage() {
+    window.requestAnimationFrame(() => {
+      const last = el.messages.lastElementChild;
+      if (last) {
+        last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      } else {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      }
+    });
   }
 
   function isTableRow(line) {
@@ -92,6 +112,11 @@
     while (index < lines.length) {
       const trimmed = lines[index].trim();
       if (!trimmed) { index += 1; continue; }
+      if (/^---+$/.test(trimmed)) {
+        blocks.push('<hr>');
+        index += 1;
+        continue;
+      }
       if (trimmed.startsWith('```')) {
         const code = [];
         index += 1;
@@ -101,6 +126,15 @@
         }
         if (index < lines.length) index += 1;
         blocks.push(`<pre><code class="language-python">${escapeHtml(code.join('\n'))}</code></pre>`);
+        continue;
+      }
+      if (trimmed.startsWith('>')) {
+        const quote = [];
+        while (index < lines.length && lines[index].trim().startsWith('>')) {
+          quote.push(lines[index].trim().replace(/^>\s?/, ''));
+          index += 1;
+        }
+        blocks.push(`<blockquote>${quote.map(formatInline).join('<br>')}</blockquote>`);
         continue;
       }
       if (isTableRow(lines[index]) && index + 1 < lines.length && /^\|[\s\-|:]+\|$/.test(lines[index + 1].trim())) {
@@ -122,12 +156,12 @@
         index += 1;
         continue;
       }
-      const listType = /^[-*]\s+/.test(trimmed) ? 'ul' : (/^\d+\.\s+/.test(trimmed) ? 'ol' : '');
+      const listType = /^[-*]\s+/.test(trimmed) ? 'ul' : (/^\d+[.\u3001)]\s+/.test(trimmed) ? 'ol' : '');
       if (listType) {
         const items = [];
         while (index < lines.length) {
           const item = lines[index].trim();
-          const match = listType === 'ul' ? item.match(/^[-*]\s+(.+)$/) : item.match(/^\d+\.\s+(.+)$/);
+          const match = listType === 'ul' ? item.match(/^[-*]\s+(.+)$/) : item.match(/^\d+[.\u3001)]\s+(.+)$/);
           if (!match) break;
           items.push(`<li>${formatInline(match[1])}</li>`);
           index += 1;
@@ -141,7 +175,7 @@
         && !isTableRow(lines[index])
         && !/^(#{1,3})\s+/.test(lines[index].trim())
         && !/^[-*]\s+/.test(lines[index].trim())
-        && !/^\d+\.\s+/.test(lines[index].trim())) {
+        && !/^\d+[.\u3001)]\s+/.test(lines[index].trim())) {
         paragraph.push(lines[index]);
         index += 1;
       }
@@ -203,6 +237,7 @@
     state.stages = [];
     state.uploads = [];
     state.selectedUploads.clear();
+    state.activeClarificationMessageId = '';
     state.schema = null;
     state.schemaForm = [];
     connectWs();
@@ -250,9 +285,15 @@
       if (payload.stages) state.stages = payload.stages;
       renderStageStrip();
       renderProgressTab();
+      renderMessages();
       if (payload.status === 'running' && payload.detail) {
         el.runDetail.textContent = payload.detail;
       }
+      return;
+    }
+    if (payload.type === 'activity') {
+      state.messages.push(payload.message);
+      renderMessages();
       return;
     }
     if (payload.type === 'assistant_final') {
@@ -308,14 +349,84 @@
     const waiting = (state.stages || []).find((stage) => stage.status === 'waiting');
     if (!waiting) return '';
     if (waiting.id === 'confirm_problem' && message.clarification) {
-      return clarifyFormHtml(message.clarification);
+      return `
+        <div class="gate-actions clarification-actions">
+          <button class="gate-confirm" data-action="confirm-clarification-direct" data-message-id="${escapeHtml(message.id)}">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M13.78 3.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 8.28a.75.75 0 1 1 1.06-1.06L6 9.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+            <span>Confirm &amp; Continue</span>
+          </button>
+          <button class="gate-edit" data-action="edit-clarification" data-message-id="${escapeHtml(message.id)}">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.54 1.74a2.1 2.1 0 0 1 2.97 2.97l-7.68 7.68a.75.75 0 0 1-.34.2l-3.43.9a.75.75 0 0 1-.92-.92l.9-3.43a.75.75 0 0 1 .2-.34l7.68-7.68Zm1.91 1.06a.6.6 0 0 0-.85 0l-.58.58.85.85.58-.58a.6.6 0 0 0 0-.85Zm-1.64 2.49-.85-.85-6.5 6.5-.36 1.37 1.37-.36 6.34-6.66Z"/></svg>
+            <span>Edit</span>
+          </button>
+        </div>
+      `;
     }
     const schemaGate = waiting.id === 'confirm_schema';
     return `
       <div class="gate-actions">
-        <button class="gate-confirm" data-action="confirm">Confirm &amp; continue</button>
+        <button class="gate-confirm" data-action="confirm">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M13.78 3.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 8.28a.75.75 0 1 1 1.06-1.06L6 9.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+          <span>Confirm &amp; Continue</span>
+        </button>
         ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>' : ''}
       </div>
+    `;
+  }
+
+  function renderClarificationCard(clarification, actionsHtml = '') {
+    const steps = (clarification.steps || [])
+      .map((step, index) => `<li><span>${index + 1}</span><p>${formatInline(step)}</p></li>`)
+      .join('');
+    return `
+      <section class="clarification-card">
+        <div class="clarification-head">
+          <span class="clarification-kicker">Problem clarification</span>
+          <h3>问题澄清</h3>
+        </div>
+        <div class="clarification-problem">
+          <span>核心问题</span>
+          <strong>${formatInline(clarification.problem || '')}</strong>
+        </div>
+        <div class="clarification-plan">
+          <span>计划步骤</span>
+          <ol>${steps}</ol>
+        </div>
+        ${actionsHtml}
+      </section>
+    `;
+  }
+
+  function renderAssistantContent(message) {
+    if (message.clarification) {
+      const actions = gateActions(message);
+      return renderClarificationCard(message.clarification, actions);
+    }
+    return `${formatMarkdown(message.content)}${gateActions(message)}`;
+  }
+
+  function renderActivity(message) {
+    let status = message.status || 'running';
+    if (message.kind === 'stage' && message.stage) {
+      const current = (state.stages || []).find((stage) => stage.id === message.stage);
+      if (current && current.status) status = current.status;
+    }
+    if (message.kind === 'run_start' && (state.stages || []).some((stage) => stage.status !== 'pending')) {
+      status = 'done';
+    }
+    const title = message.title || 'Processing step';
+    return `
+      <article class="message event">
+        <div class="avatar activity-avatar">•</div>
+        <div class="activity-card ${escapeHtml(status)}">
+          <div class="activity-card-head">
+            <span class="activity-dot"></span>
+            <strong>${escapeHtml(title)}</strong>
+            <small>${status === 'waiting' ? 'Waiting' : status === 'done' ? 'Done' : 'Working'}</small>
+          </div>
+          <p>${formatInline(message.content || '')}</p>
+        </div>
+      </article>
     `;
   }
 
@@ -342,10 +453,67 @@
         <div class="clarify-steps">${(clarification.steps || []).map(clarifyStepRowHtml).join('')}</div>
         <button type="button" class="clarify-add-step">+ Add step</button>
         <div class="gate-actions">
-          <button class="gate-confirm" data-action="confirm-clarification">Confirm &amp; continue</button>
+          <button class="gate-confirm" data-action="confirm-clarification">Confirm &amp; Continue</button>
         </div>
       </div>
     `;
+  }
+
+  function sendClarification(clarification) {
+    const problem = String(clarification.problem || '').trim();
+    const steps = (clarification.steps || []).map((step) => String(step || '').trim()).filter(Boolean);
+    if (!problem || !steps.length || state.running || !state.wsReady) return;
+    state.ws.send(JSON.stringify({ type: 'confirm_problem', problem, steps }));
+  }
+
+  function renumberClarifyModalSteps() {
+    if (!el.clarifyModalSteps) return;
+    el.clarifyModalSteps.querySelectorAll('.clarify-step-no').forEach((badge, index) => {
+      badge.textContent = index + 1;
+    });
+  }
+
+  function bindClarifyModalRemove(row) {
+    row.querySelector('.clarify-step-remove').addEventListener('click', () => {
+      row.remove();
+      renumberClarifyModalSteps();
+    });
+  }
+
+  function renderClarifyModalSteps(steps) {
+    el.clarifyModalSteps.innerHTML = (steps || []).map(clarifyStepRowHtml).join('');
+    el.clarifyModalSteps.querySelectorAll('.clarify-step').forEach(bindClarifyModalRemove);
+    renumberClarifyModalSteps();
+  }
+
+  function openClarificationModal(messageId) {
+    const message = state.messages.find((item) => item.id === messageId);
+    if (!message || !message.clarification || !el.clarifyOverlay) return;
+    state.activeClarificationMessageId = messageId;
+    el.clarifyModalProblem.value = message.clarification.problem || '';
+    renderClarifyModalSteps(message.clarification.steps || []);
+    el.clarifyOverlay.hidden = false;
+    el.body.classList.add('modal-open');
+    window.requestAnimationFrame(() => el.clarifyModalProblem.focus());
+  }
+
+  function closeClarificationModal() {
+    state.activeClarificationMessageId = '';
+    if (el.clarifyOverlay) el.clarifyOverlay.hidden = true;
+    el.body.classList.remove('modal-open');
+  }
+
+  function saveClarificationModal() {
+    const problem = el.clarifyModalProblem.value.trim();
+    const steps = Array.from(el.clarifyModalSteps.querySelectorAll('.clarify-step-input'))
+      .map((input) => input.value.trim())
+      .filter(Boolean);
+    if (!problem || !steps.length) {
+      alert('The problem statement and at least one step are required.');
+      return;
+    }
+    closeClarificationModal();
+    sendClarification({ problem, steps });
   }
 
   function bindClarifyForm(form) {
@@ -383,7 +551,7 @@
   }
 
   function renderMessages() {
-    const visible = state.messages.filter((message) => ['user', 'assistant', 'system'].includes(message.role));
+    const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
     el.messages.innerHTML = visible.map((message) => {
@@ -397,22 +565,36 @@
         return `
           <article class="message assistant">
             <div class="avatar">O</div>
-            <div class="bubble">${formatMarkdown(message.content)}${gateActions(message)}</div>
+            <div class="bubble">${renderAssistantContent(message)}</div>
           </article>
         `;
+      }
+      if (message.role === 'event') {
+        return renderActivity(message);
       }
       return `<article class="message system"><div class="bubble">${escapeHtml(message.content || '')}</div></article>`;
     }).join('');
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
       button.addEventListener('click', () => sendQuickReply('Confirm'));
     });
+    el.messages.querySelectorAll('[data-action="confirm-clarification-direct"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const message = state.messages.find((item) => item.id === button.getAttribute('data-message-id'));
+        if (message && message.clarification) sendClarification(message.clarification);
+      });
+    });
+    el.messages.querySelectorAll('[data-action="edit-clarification"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        openClarificationModal(button.getAttribute('data-message-id'));
+      });
+    });
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openPanel('schema'));
     });
-    el.messages.querySelectorAll('.clarify-form').forEach(bindClarifyForm);
     if (window.Prism) window.Prism.highlightAllUnder(el.messages);
     el.messages.scrollTop = el.messages.scrollHeight;
   }
+    scrollToLatestMessage();
 
   // ── Stage strip ─────────────────────────────────────────────────────────
 
@@ -943,8 +1125,26 @@
     if (el.confirmOverlay) el.confirmOverlay.addEventListener('click', (event) => {
       if (event.target === el.confirmOverlay) closeConfirm(false);
     });
+    if (el.clarifyModalClose) el.clarifyModalClose.addEventListener('click', closeClarificationModal);
+    if (el.clarifyModalCancel) el.clarifyModalCancel.addEventListener('click', closeClarificationModal);
+    if (el.clarifyModalSave) el.clarifyModalSave.addEventListener('click', saveClarificationModal);
+    if (el.clarifyModalAddStep) {
+      el.clarifyModalAddStep.addEventListener('click', () => {
+        el.clarifyModalSteps.insertAdjacentHTML('beforeend', clarifyStepRowHtml(''));
+        const row = el.clarifyModalSteps.lastElementChild;
+        bindClarifyModalRemove(row);
+        renumberClarifyModalSteps();
+        row.querySelector('.clarify-step-input').focus();
+      });
+    }
+    if (el.clarifyOverlay) {
+      el.clarifyOverlay.addEventListener('click', (event) => {
+        if (event.target === el.clarifyOverlay) closeClarificationModal();
+      });
+    }
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && el.confirmOverlay && !el.confirmOverlay.hidden) closeConfirm(false);
+      if (event.key === 'Escape' && el.clarifyOverlay && !el.clarifyOverlay.hidden) closeClarificationModal();
     });
 
     el.fabMain.addEventListener('click', toggleFab);
