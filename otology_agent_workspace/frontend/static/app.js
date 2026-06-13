@@ -537,7 +537,18 @@
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
     if (!entities.length && !relations.length) {
-      return '<div class="onto-empty">Schema preview is loading.</div>';
+      return `
+        <section class="schema-review-card">
+          <div class="schema-review-head">
+            <div>
+              <span class="run-section-label">Schema confirmation</span>
+              <h3>Review schema before continuing</h3>
+            </div>
+            <span class="schema-review-status">Waiting</span>
+          </div>
+          <div class="onto-empty">Schema preview is loading.</div>
+        </section>
+      `;
     }
     const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item) => `
@@ -563,18 +574,28 @@
       `;
     }).join('');
     return `
-      <div class="schema-preview-card">
-        <h4>Entity Definitions</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
-        </table></div>
-        <h4>Relation Schema</h4>
-        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
-        </table></div>
-      </div>
+      <section class="schema-review-card">
+        <div class="schema-review-head">
+          <div>
+            <span class="run-section-label">Schema confirmation</span>
+            <h3>Review schema before continuing</h3>
+          </div>
+          <span class="schema-review-status">Waiting</span>
+        </div>
+        <p class="schema-review-copy">Confirm the entity definitions and relation schema below, or open Schema Studio to edit them.</p>
+        <div class="schema-preview-card">
+          <h4>Entity Definitions</h4>
+          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+          </table></div>
+          <h4>Relation Schema</h4>
+          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
+            <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
+            <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+          </table></div>
+        </div>
+      </section>
     `;
   }
 
@@ -715,11 +736,40 @@
 
   function renderStagePipeline(cards) {
     if (!cards.length) return '';
+    const active = cards.find((card) => ['running', 'waiting'].includes(card.status)) || cards[cards.length - 1];
+    const finished = cards.every((card) => card.status === 'done');
+    const toolCount = cards.reduce((total, card) => total + Math.max(card.tools.length, 1), 0);
+    const thinking = active && active.thinking
+      ? active.thinking
+      : (active ? `${active.title} is ${stageStatusText(active.status).toLowerCase()}.` : 'Waiting for the next model update.');
+    const modelOutput = active && active.status === 'waiting'
+      ? 'A confirmation step is ready below.'
+      : (finished ? 'This processing group is complete.' : 'Model output will update as this step completes.');
     return `
-      <article class="message event stage-pipeline-message">
+      <article class="message event stage-pipeline-message run-progress">
         <div class="avatar activity-avatar">O</div>
-        <div class="stage-card-list">
-          ${cards.map(renderStageCard).join('')}
+        <div class="run-card ontology-run-card ${finished ? 'complete' : 'working'}">
+          <div class="run-card-head">
+            <div class="run-title">
+              <span class="${finished ? 'run-check' : 'run-pulse'}">${finished ? '✓' : ''}</span>
+              <span>${finished ? 'Processing complete' : 'Agent is working'}</span>
+            </div>
+            <span class="run-count">${toolCount} tool updates</span>
+          </div>
+          <div class="run-tool-pane">
+            <span class="run-section-label">Tool activity</span>
+            <div class="stage-card-list">
+              ${cards.map(renderStageCard).join('')}
+            </div>
+          </div>
+          <div class="run-reasoning-pane">
+            <span class="run-section-label">Model thinking</span>
+            <div class="run-reasoning-output">${escapeHtml(sanitizeDisplayText(thinking))}</div>
+          </div>
+          <div class="run-model-pane">
+            <span class="run-section-label">Model output</span>
+            <div class="run-model-output">${formatMarkdown(modelOutput)}</div>
+          </div>
         </div>
       </article>
     `;
@@ -1143,10 +1193,10 @@
         <p class="onto-section-hint">${editable ? 'Edit entity and relation names directly, apply changes, then confirm.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Data Type</th></tr></thead>
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
           <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
-        <h4 class="onto-subhead">Schema Table</h4>
+        <h4 class="onto-subhead">Relation Schema</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
           <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
           <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>

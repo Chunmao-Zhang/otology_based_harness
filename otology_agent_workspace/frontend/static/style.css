@@ -5230,7 +5230,7 @@ textarea#message-input.chat-input:focus-visible,
 /* ── Ontology QA additions ──────────────────────────────────────────────── */
 
 .md-table-wrap {
-  overflow-x: auto;
+  overflow-x: scroll;
   overflow-y: hidden;
   margin: 10px 0;
   border: 1px solid var(--line);
@@ -5254,8 +5254,6 @@ textarea#message-input.chat-input:focus-visible,
   border-bottom: 1px solid var(--line);
   color: var(--ink-soft);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 116px;
 }
 
@@ -5268,7 +5266,7 @@ textarea#message-input.chat-input:focus-visible,
 .md-table tbody tr:last-child td { border-bottom: 0; }
 
 .schema-relation-table {
-  min-width: 980px;
+  min-width: 1160px;
 }
 
 .bubble h1,
@@ -5500,17 +5498,122 @@ textarea#message-input.chat-input:focus-visible,
   align-items: flex-start;
 }
 
+.run-card {
+  width: min(760px, calc(100vw - 72px));
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 22px 22px 22px 6px;
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 94%, var(--accent-soft)), var(--panel-strong));
+  box-shadow: var(--shadow-soft);
+}
+
+.run-card.complete {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--line));
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--success) 12%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 94%, rgba(22, 163, 74, .10)), var(--panel-strong));
+}
+
+.run-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.run-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.run-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--success);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 42%, transparent);
+  animation: onto-pulse 1.6s ease-out infinite;
+}
+
+.run-check {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 999px;
+  color: white;
+  background: var(--success);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.run-count {
+  color: var(--ink-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.run-tool-pane,
+.run-reasoning-pane,
+.run-model-pane {
+  padding: 15px 16px 16px;
+}
+
+.run-tool-pane,
+.run-reasoning-pane {
+  border-bottom: 1px solid var(--line);
+}
+
+.run-reasoning-pane {
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 4%);
+}
+
+.run-section-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.run-reasoning-output {
+  max-height: 168px;
+  overflow-y: auto;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.run-model-output {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
 .stage-card-list {
-  width: min(700px, calc(100vw - 72px));
+  width: 100%;
   display: grid;
   gap: 10px;
 }
 
 .stage-card {
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
-  border-radius: 16px 16px 16px 4px;
-  background: color-mix(in srgb, var(--panel-strong) 94%, var(--accent-soft));
-  box-shadow: 0 10px 26px rgba(15, 23, 42, .06);
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--line));
+  border-radius: 14px;
+  background: var(--panel-strong);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, .04);
   overflow: hidden;
 }
 
@@ -5614,14 +5717,68 @@ textarea#message-input.chat-input:focus-visible,
 
 .schema-preview-card {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .schema-preview-card h4 {
-  margin: 4px 0 0;
+  margin: 6px 0 -2px;
   color: var(--ink);
   font-size: 14px;
   font-weight: 800;
+}
+
+.schema-review-card {
+  width: min(820px, calc(100vw - 72px));
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: 22px 22px 22px 6px;
+  background:
+    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 34%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 96%, var(--accent-soft)), var(--panel-strong));
+  box-shadow: var(--shadow-soft);
+}
+
+.schema-review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.schema-review-head .run-section-label {
+  margin-bottom: 6px;
+}
+
+.schema-review-head h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.schema-review-status {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: color-mix(in srgb, var(--warning) 78%, #7c2d12);
+  font-size: 11px;
+  font-weight: 820;
+  white-space: nowrap;
+}
+
+.schema-review-copy {
+  margin: -2px 0 2px;
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.schema-review-actions {
+  width: min(820px, calc(100vw - 72px));
+  margin-top: 12px;
 }
 
 .gate-actions {
