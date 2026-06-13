@@ -981,9 +981,9 @@
     });
   }
 
-  function renderMessages() {
+  function renderMessages(options = {}) {
     const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
-    const shouldAutoScroll = state.forceScroll || isNearBottom();
+    const shouldAutoScroll = !options.preserveScroll && (state.forceScroll || isNearBottom());
     state.forceScroll = false;
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
@@ -1011,9 +1011,22 @@
       button.addEventListener('click', () => {
         const stageId = button.getAttribute('data-stage-card');
         if (!stageId) return;
+        const stageButtons = Array.from(el.messages.querySelectorAll('[data-stage-card]'))
+          .filter((item) => item.getAttribute('data-stage-card') === stageId);
+        const stageIndex = Math.max(0, stageButtons.indexOf(button));
+        const anchor = button.closest('.task-node') || button;
+        const anchorTop = anchor.getBoundingClientRect().top;
         if (state.expandedStageCards.has(stageId)) state.expandedStageCards.delete(stageId);
         else state.expandedStageCards.add(stageId);
-        renderMessages();
+        renderMessages({ preserveScroll: true });
+        window.requestAnimationFrame(() => {
+          const nextButtons = Array.from(el.messages.querySelectorAll('[data-stage-card]'))
+            .filter((item) => item.getAttribute('data-stage-card') === stageId);
+          const nextButton = nextButtons[Math.min(stageIndex, nextButtons.length - 1)];
+          const nextAnchor = nextButton?.closest('.task-node') || nextButton;
+          if (!nextAnchor) return;
+          window.scrollBy(0, nextAnchor.getBoundingClientRect().top - anchorTop);
+        });
       });
     });
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
