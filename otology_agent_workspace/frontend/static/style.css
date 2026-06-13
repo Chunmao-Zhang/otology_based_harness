@@ -419,9 +419,9 @@ body:not(.rail-collapsed) .input-section {
   opacity: 0;
   transition: opacity .14s ease, background .14s ease, color .14s ease;
 }
-.rail-item:hover .rail-item-delete { opacity: .55; }
+.rail-item:hover .rail-item-delete { opacity: .5; }
 .rail-item:hover .rail-item-delete:hover { opacity: 1; }
-.rail-item-delete:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
+.rail-item-delete:hover { background: transparent; color: var(--danger); transform: scale(1.12); }
 
 .rail-empty {
   padding: 16px 10px;

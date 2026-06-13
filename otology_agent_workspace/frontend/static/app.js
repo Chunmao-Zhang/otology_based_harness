@@ -818,7 +818,7 @@
             </span>
             <span class="rail-item-title">${escapeHtml(session.title || 'New chat')}</span>
             <button class="rail-item-delete" data-delete-session="${escapeHtml(session.id)}" title="Delete chat" aria-label="Delete chat">
-              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M6.5 1.5h3a1 1 0 0 1 1 1V3H13a.5.5 0 0 1 0 1h-.55l-.6 8.4a1.5 1.5 0 0 1-1.5 1.4H5.65a1.5 1.5 0 0 1-1.5-1.4L3.55 4H3a.5.5 0 0 1 0-1h2.5v-.5a1 1 0 0 1 1-1Zm-.5 3 .55 7.78a.5.5 0 0 0 .5.47h4.9a.5.5 0 0 0 .5-.47L12.5 4.5h-7Z"/></svg>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
             </button>
           </div>
         `).join('')
