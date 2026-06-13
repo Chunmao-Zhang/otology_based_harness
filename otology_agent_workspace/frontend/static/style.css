@@ -316,40 +316,38 @@ body:not(.rail-collapsed) .input-section {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  height: 42px;
-  padding: 0 14px;
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 80%, var(--panel-strong)), var(--panel-strong));
+  height: 40px;
+  padding: 0 13px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
   color: var(--ink);
   font-size: 13.5px;
-  font-weight: 650;
+  font-weight: 600;
   cursor: pointer;
-  box-shadow: var(--shadow-soft);
-  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+  transition: background .16s ease, border-color .16s ease;
 }
 
-.rail-new-chat svg { color: var(--accent); }
+.rail-new-chat svg { color: var(--accent); flex: 0 0 auto; }
 .rail-new-chat:hover {
-  transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
-  box-shadow: 0 12px 26px rgba(37, 99, 235, .16);
+  background: color-mix(in srgb, var(--ink) 5%, var(--panel-strong));
+  border-color: var(--line-strong);
 }
 
 .rail-collapse {
   flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
+  border-radius: 10px;
   background: transparent;
   color: var(--ink-muted);
   cursor: pointer;
   transition: background .15s ease, color .15s ease;
 }
-.rail-collapse:hover { background: var(--line); color: var(--ink); }
+.rail-collapse:hover { background: var(--accent-soft); color: var(--accent); }
 
 .side-rail-label {
   padding: 4px 8px 0;
@@ -409,20 +407,21 @@ body:not(.rail-collapsed) .input-section {
 
 .rail-item-delete {
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
+  border-radius: 999px;
   background: transparent;
   color: var(--ink-muted);
   cursor: pointer;
   opacity: 0;
   transition: opacity .14s ease, background .14s ease, color .14s ease;
 }
-.rail-item:hover .rail-item-delete { opacity: 1; }
-.rail-item-delete:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.rail-item:hover .rail-item-delete { opacity: .55; }
+.rail-item:hover .rail-item-delete:hover { opacity: 1; }
+.rail-item-delete:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 
 .rail-empty {
   padding: 16px 10px;
