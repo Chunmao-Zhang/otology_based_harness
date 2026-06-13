@@ -8,24 +8,40 @@
   <title>Ontology QA Agent</title>
   <link rel="icon" href="/static/assets/knowcoder-logo.svg" type="image/svg+xml">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=20260612-ontology-v6">
+  <link rel="stylesheet" href="/static/style.css?v=20260612-ontology-v7">
 </head>
 <body class="light-theme" data-agent-id="ontology_coordinator">
+  <aside class="side-rail" id="side-rail" aria-label="Session history">
+    <div class="side-rail-top">
+      <button class="rail-new-chat" id="rail-new-chat" type="button">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 1.5a.75.75 0 0 1 .75.75v5h5a.75.75 0 0 1 0 1.5h-5v5a.75.75 0 0 1-1.5 0v-5h-5a.75.75 0 0 1 0-1.5h5v-5A.75.75 0 0 1 8 1.5Z"/></svg>
+        <span>New chat</span>
+      </button>
+      <button class="rail-collapse" id="rail-collapse" type="button" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2.5 3.75A2.25 2.25 0 0 1 4.75 1.5h6.5a2.25 2.25 0 0 1 2.25 2.25v8.5a2.25 2.25 0 0 1-2.25 2.25h-6.5A2.25 2.25 0 0 1 2.5 12.25v-8.5Zm4 .75v7H4.75a.75.75 0 0 1-.75-.75v-5.5a.75.75 0 0 1 .75-.75H6.5Z"/></svg>
+      </button>
+    </div>
+    <div class="side-rail-label">Chats</div>
+    <div class="side-rail-list" id="session-list"></div>
+  </aside>
+
   <header class="navbar">
     <div class="navbar-content">
-      <div class="logo" id="brand-home" title="Back to home">
-        <img src="/static/assets/knowcoder-logo.svg" alt="Ontology QA logo" class="logo-img">
-        <span class="logo-text-wrap">
-          <span class="logo-text">Ontology QA Agent</span>
-          <span class="logo-subtext">From question to ontology schema to verifiable answers</span>
-        </span>
+      <div class="nav-left">
+        <button class="icon-btn rail-toggle" id="rail-toggle" title="Show sidebar" aria-label="Show sidebar">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M2.5 3.75A2.25 2.25 0 0 1 4.75 1.5h6.5a2.25 2.25 0 0 1 2.25 2.25v8.5a2.25 2.25 0 0 1-2.25 2.25h-6.5A2.25 2.25 0 0 1 2.5 12.25v-8.5Zm4 .75v7H4.75a.75.75 0 0 1-.75-.75v-5.5a.75.75 0 0 1 .75-.75H6.5Z"/></svg>
+        </button>
+        <div class="logo" id="brand-home" title="Back to home">
+          <img src="/static/assets/knowcoder-logo.svg" alt="Ontology QA logo" class="logo-img">
+          <span class="logo-text-wrap">
+            <span class="logo-text">Ontology QA Agent</span>
+            <span class="logo-subtext">From question to ontology schema to verifiable answers</span>
+          </span>
+        </div>
       </div>
       <div class="nav-right">
         <div class="status-chip" id="status-pill"><span class="status-dot"></span><span>Checking service</span></div>
         <div class="model-chip" id="model-chip">Model</div>
-        <button class="icon-btn" id="history-btn" title="View past sessions" aria-label="View past sessions">
-          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 1a7 7 0 1 0 6.32 4H13.2A6 6 0 1 1 8 2v2.2L11.2 1 8-2.2V1Zm.5 3.5h-1v4l3.2 1.9.5-.86-2.7-1.6V4.5Z"/></svg>
-        </button>
         <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 12.5A4.5 4.5 0 1 0 8 3.5a4.5 4.5 0 0 0 0 9Zm0 1A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11ZM8 .5a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V1A.5.5 0 0 1 8 .5Zm0 13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0v-1a.5.5 0 0 1 .5-.5ZM.5 8a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1H1A.5.5 0 0 1 .5 8Zm13 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5Z"/></svg>
         </button>
@@ -91,7 +107,9 @@
             <span class="kb-scope-kicker">Attached files</span>
             <span class="kb-scope-current" id="upload-current">No files attached</span>
           </div>
-          <button type="button" class="attach-add-btn" id="attach-add" title="Attach files from your computer" aria-label="Attach files from your computer">+</button>
+          <button type="button" class="attach-add-btn" id="attach-add" title="Attach files from your computer" aria-label="Attach files from your computer">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="M10 4.5v11M4.5 10h11"/></svg>
+          </button>
           <input type="file" id="chat-file-input" accept=".csv,.txt,.md" multiple hidden>
           <div class="attach-chips" id="attach-chips" hidden></div>
         </div>
@@ -153,23 +171,6 @@
     </div>
   </aside>
 
-  <div class="history-overlay" id="history-overlay"></div>
-  <section class="history-modal" id="history-modal" aria-modal="true" role="dialog">
-    <div class="modal-header">
-      <div>
-        <span class="modal-eyebrow">Session library</span>
-        <h2>Past Sessions</h2>
-        <p>Reopen a previous conversation or clean up saved chats.</p>
-      </div>
-      <div class="modal-actions">
-        <span class="history-count" id="session-count">0 record(s)</span>
-        <button class="history-start" id="history-new-chat" type="button">New chat</button>
-      </div>
-      <button class="close-modal" id="close-history" aria-label="Close history">×</button>
-    </div>
-    <div class="history-list" id="session-list"></div>
-  </section>
-
   <script>
     window.STUDIO_CONFIG = {
       agentId: "ontology_coordinator",
@@ -178,6 +179,6 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
-  <script src="/static/app.js?v=20260612-ontology-v6"></script>
+  <script src="/static/app.js?v=20260612-ontology-v7"></script>
 </body>
 </html>

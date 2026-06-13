@@ -115,6 +115,7 @@ class SessionStore:
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "thread_id": f"ontology-ui-{session_id}",
+            "run_id": f"sess-{session_id}",
             "messages": [],
             "stages": fresh_stages(),
         }
@@ -145,6 +146,8 @@ class SessionStore:
         data = read_json(path)
         if "stages" not in data:
             data["stages"] = fresh_stages()
+        if not data.get("run_id"):
+            data["run_id"] = f"sess-{data.get('id', path.stem)}"
         return data
 
     def save(self, session: dict[str, Any]) -> None:
@@ -158,6 +161,40 @@ class SessionStore:
 
 
 STORE = SessionStore()
+
+
+def safe_session_id(session_id: str) -> str:
+    safe = "".join(ch for ch in str(session_id) if ch.isalnum() or ch in "-_")
+    if not safe:
+        raise HTTPException(status_code=400, detail="Invalid session id")
+    return safe
+
+
+def session_run_id(session: dict[str, Any]) -> str:
+    return Path(str(session.get("run_id") or f"sess-{session['id']}")).name
+
+
+def session_run_dir(session: dict[str, Any]) -> Path:
+    return RUNS_DIR / session_run_id(session)
+
+
+def run_dir_for_session(session_id: str) -> Path | None:
+    """Resolve a session id to its run directory (None if the session is unknown)."""
+    if not session_id:
+        return None
+    try:
+        session = STORE.get(session_id)
+    except HTTPException:
+        return None
+    return session_run_dir(session)
+
+
+def session_upload_dir(session_id: str, create: bool = False) -> Path:
+    path = UPLOAD_DIR / safe_session_id(session_id)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
 
 app = FastAPI(title=UI_BRAND, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -190,15 +227,26 @@ async def health():
         "agent": AGENT_ID,
         "model": model_id,
         "mock": MOCK_MODE,
-        "upload_count": len(list_uploads()),
+        "upload_count": total_upload_count(),
     }
 
 
-# ─── Uploads ──────────────────────────────────────────────────────────────────
+# ─── Uploads (scoped per session) ─────────────────────────────────────────────
 
-def list_uploads() -> list[dict[str, Any]]:
+def total_upload_count() -> int:
+    if not UPLOAD_DIR.exists():
+        return 0
+    return sum(
+        1
+        for path in UPLOAD_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in ALLOWED_UPLOAD_SUFFIXES
+    )
+
+
+def list_uploads(session_id: str) -> list[dict[str, Any]]:
+    upload_dir = session_upload_dir(session_id)
     items = []
-    for path in sorted(UPLOAD_DIR.iterdir() if UPLOAD_DIR.exists() else []):
+    for path in sorted(upload_dir.iterdir() if upload_dir.exists() else []):
         if not path.is_file() or path.suffix.lower() not in ALLOWED_UPLOAD_SUFFIXES:
             continue
         stat = path.stat()
@@ -213,45 +261,53 @@ def list_uploads() -> list[dict[str, Any]]:
     return items
 
 
-def safe_upload_path(upload_id: str) -> Path:
+def safe_upload_path(session_id: str, upload_id: str) -> Path:
+    upload_dir = session_upload_dir(session_id)
     name = Path(upload_id).name
-    path = (UPLOAD_DIR / name).resolve()
-    if UPLOAD_DIR.resolve() not in path.parents:
+    path = (upload_dir / name).resolve()
+    if upload_dir.resolve() not in path.parents:
         raise HTTPException(status_code=400, detail="Invalid upload id")
     return path
 
 
 @app.get("/api/uploads")
-async def uploads_index():
-    return {"uploads": list_uploads()}
+async def uploads_index(session_id: str = ""):
+    if not session_id:
+        return {"uploads": []}
+    return {"uploads": list_uploads(session_id)}
 
 
 @app.post("/api/uploads")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(session_id: str = Form(...), file: UploadFile = File(...)):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOAD_SUFFIXES:
         raise HTTPException(status_code=400, detail="Only csv / txt / md files are supported")
+    upload_dir = session_upload_dir(session_id, create=True)
     stem = re.sub(r"[^\w.\-]+", "_", Path(file.filename or "upload").stem)[:60] or "upload"
-    target = UPLOAD_DIR / f"{stem}{suffix}"
+    target = upload_dir / f"{stem}{suffix}"
     counter = 1
     while target.exists():
-        target = UPLOAD_DIR / f"{stem}_{counter}{suffix}"
+        target = upload_dir / f"{stem}_{counter}{suffix}"
         counter += 1
     target.write_bytes(await file.read())
     return {"ok": True, "upload": {"id": target.name, "name": target.name}}
 
 
 @app.delete("/api/uploads/{upload_id}")
-async def delete_upload(upload_id: str):
-    path = safe_upload_path(upload_id)
+async def delete_upload(upload_id: str, session_id: str = ""):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    path = safe_upload_path(session_id, upload_id)
     if path.exists():
         path.unlink()
     return {"ok": True}
 
 
 @app.get("/api/uploads/{upload_id}/preview")
-async def preview_upload(upload_id: str):
-    path = safe_upload_path(upload_id)
+async def preview_upload(upload_id: str, session_id: str = ""):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    path = safe_upload_path(session_id, upload_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -275,34 +331,85 @@ def latest_run_with(relative: str) -> Path | None:
     return None
 
 
+def resolve_artifact_dir(session_id: str, relative: str) -> Path | None:
+    """Run dir for a session's artifact (legacy global fallback when no session id)."""
+    if session_id:
+        return run_dir_for_session(session_id)
+    return latest_run_with(relative)
+
+
+def load_web_evidence_files(run_dir: Path) -> list[dict[str, Any]]:
+    """Persisted web evidence written by the web_search tool for this run."""
+    web_dir = run_dir / "intermediate" / "web_evidence"
+    out: list[dict[str, Any]] = []
+    if not web_dir.exists():
+        return out
+    for path in sorted(web_dir.glob("*.json")):
+        if path.name.startswith("_"):
+            continue
+        try:
+            record = read_json(path)
+        except Exception:
+            continue
+        out.append({
+            "source_id": str(record.get("source_id", path.stem)),
+            "source_kind": "web",
+            "file_type": "html",
+            "reason": record.get("query", ""),
+            "url": record.get("url", ""),
+            "title": record.get("title", ""),
+            "stage": record.get("collected_stage", "evidence"),
+        })
+    return out
+
+
 @app.get("/api/evidence")
-async def evidence_summary():
-    run_dir = latest_run_with("intermediate/evidence_manifest.json")
+async def evidence_summary(session_id: str = ""):
+    run_dir = resolve_artifact_dir(session_id, "intermediate/evidence_manifest.json")
     if run_dir is None:
-        return {"ok": True, "run_id": "", "sources": [], "needs_web_search": False}
-    try:
-        manifest = read_json(run_dir / "intermediate" / "evidence_manifest.json")
-    except Exception:
-        return {"ok": False, "run_id": run_dir.name, "sources": [], "needs_web_search": False}
+        return {"ok": True, "run_id": "", "question": "", "sources": [], "needs_web_search": False}
+    manifest: dict[str, Any] = {}
+    manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = read_json(manifest_path)
+        except Exception:
+            manifest = {}
     sources = []
+    seen_web: set[str] = set()
     for source in manifest.get("sources", []) or []:
         if not isinstance(source, dict):
             continue
-        sources.append({
+        kind = source.get("source_kind", "")
+        entry = {
             "source_id": Path(str(source.get("source_id", ""))).name,
-            "source_kind": source.get("source_kind", ""),
+            "source_kind": kind,
             "file_type": source.get("file_type", ""),
             "reason": source.get("reason", ""),
             "url": source.get("url", ""),
             "title": source.get("title", ""),
             "stage": source.get("collected_stage", ""),
-        })
+        }
+        if kind == "web":
+            seen_web.add(entry["url"] or entry["source_id"])
+        sources.append(entry)
+    # Merge persisted web evidence files not already registered in the manifest so
+    # both search rounds remain visible even if the agent did not re-list them.
+    for record in load_web_evidence_files(run_dir):
+        key = record["url"] or record["source_id"]
+        if key in seen_web:
+            continue
+        seen_web.add(key)
+        sources.append(record)
+    needs_web = bool(manifest.get("needs_web_search", False)) or any(
+        s["source_kind"] == "web" for s in sources
+    )
     return {
         "ok": True,
         "run_id": run_dir.name,
         "question": manifest.get("question", ""),
         "sources": sources,
-        "needs_web_search": bool(manifest.get("needs_web_search", False)),
+        "needs_web_search": needs_web,
     }
 
 
@@ -317,10 +424,17 @@ def schema_payload(run_dir: Path) -> dict[str, Any]:
 
 
 @app.get("/api/schema")
-async def get_schema():
-    run_dir = latest_run_with("concepts/draft_schema.py") or latest_run_with("concepts/confirmed_schema.py")
-    if run_dir is None:
-        return {"ok": True, "run_id": "", "status": "none", "form": [], "schema_text": ""}
+async def get_schema(session_id: str = ""):
+    if session_id:
+        run_dir = run_dir_for_session(session_id)
+    else:
+        run_dir = latest_run_with("concepts/draft_schema.py") or latest_run_with("concepts/confirmed_schema.py")
+    has_schema = run_dir is not None and (
+        (run_dir / "concepts" / "draft_schema.py").exists()
+        or (run_dir / "concepts" / "confirmed_schema.py").exists()
+    )
+    if not has_schema:
+        return {"ok": True, "run_id": run_dir.name if run_dir else "", "status": "none", "form": [], "schema_text": ""}
     try:
         return schema_payload(run_dir)
     except Exception as exc:
@@ -363,13 +477,14 @@ async def confirm_schema_endpoint(payload: dict[str, Any]):
 
 
 @app.get("/api/results")
-async def results_summary():
-    run_dir = latest_run_with("intermediate/extraction_report.json")
+async def results_summary(session_id: str = ""):
+    run_dir = resolve_artifact_dir(session_id, "intermediate/extraction_report.json")
     report: dict[str, Any] = {}
     answer_sources: list[str] = []
-    if run_dir is not None:
+    report_path = run_dir / "intermediate" / "extraction_report.json" if run_dir is not None else None
+    if report_path is not None and report_path.exists():
         try:
-            raw = read_json(run_dir / "intermediate" / "extraction_report.json")
+            raw = read_json(report_path)
             report = {
                 "total_instances": raw.get("total_instances"),
                 "total_facts": raw.get("total_facts"),
@@ -379,6 +494,7 @@ async def results_summary():
             }
         except Exception:
             report = {}
+    if run_dir is not None:
         solver_path = run_dir / "intermediate" / "solver_result.json"
         if solver_path.exists():
             try:
@@ -504,12 +620,24 @@ def get_cached_agent():
     return _AGENT_SINGLETON
 
 
-def run_real_agent(message: str, thread_id: str, emit) -> str:
+def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
     from langchain_core.messages import HumanMessage
 
     agent, agent_cfg = get_cached_agent()
+    # Bind this session to its own run directory so evidence, schema and data
+    # artifacts are isolated per session and the two web-search rounds share one
+    # web_evidence store (ontology tools key off HARNESS_RUN_DIR).
+    run_dir.mkdir(parents=True, exist_ok=True)
     os.environ["HARNESS_ROOT"] = str(ROOT)
     os.environ["HARNESS_AGENT_ID"] = AGENT_ID
+    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
+    run_id = run_dir.name
+    message = (
+        f"{message}\n\n[run_context] run_id={run_id}. Persist every run artifact under "
+        f"runs/ontology_workspace_runs/{run_id}/ (evidence_manifest.json, web_evidence/, "
+        "draft_schema.py, data/). Reuse web evidence already persisted in this run instead "
+        "of repeating searches."
+    )
 
     final_content = ""
     config = {"configurable": {"thread_id": thread_id or "default"}}
@@ -562,12 +690,25 @@ class Industry:  # entity_type: BusinessDomain
 '''
 
 
+def _write_mock_web_evidence(run_dir: Path, source_id: str, stage: str, url: str, title: str, query: str) -> None:
+    web_dir = run_dir / "intermediate" / "web_evidence"
+    web_dir.mkdir(parents=True, exist_ok=True)
+    (web_dir / f"{source_id}.json").write_text(json.dumps({
+        "source_id": source_id,
+        "query": query,
+        "url": url,
+        "title": title,
+        "snippet": "Mock persisted web evidence for local UI testing.",
+        "retrieved_at": now_iso(),
+        "collected_stage": stage,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
     """Deterministic walkthrough of the pipeline for local UI testing."""
     stages = {s["id"]: s["status"] for s in session["stages"]}
+    run_dir = session_run_dir(session)
     if stages.get("confirm_problem") == "waiting":
-        run_id = f"mock{uuid4().hex[:6]}"
-        run_dir = RUNS_DIR / run_id
         (run_dir / "concepts").mkdir(parents=True, exist_ok=True)
         (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
         (run_dir / "concepts" / "draft_schema.py").write_text(MOCK_SCHEMA, encoding="utf-8")
@@ -584,6 +725,13 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
                  "reason": "Supplements industry sub-domain labels missing from the upload"},
             ],
         }, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Round 1 web evidence, persisted to this session's run dir.
+        _write_mock_web_evidence(
+            run_dir, "web_001", "evidence",
+            "https://example.com/us-data-analytics-companies",
+            "Top data analytics companies in the US",
+            "US data analytics companies",
+        )
         for stage, pause in (("evidence", 1.2), ("schema_build", 1.6), ("schema_judge", 1.2)):
             emit({"type": "stage", "stage": stage, "status": "running"})
             time.sleep(pause)
@@ -595,13 +743,19 @@ def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
             "Review and edit it in the Schema Studio on the right. Once you confirm, I will continue with data extraction."
         )
     if stages.get("confirm_schema") == "waiting":
-        run_dir = latest_run_with("concepts/draft_schema.py")
-        if run_dir is not None:
+        if (run_dir / "concepts" / "draft_schema.py").exists():
             confirm_schema(run_dir / "concepts" / "draft_schema.py", run_dir / "concepts" / "confirmed_schema.py")
             (run_dir / "intermediate" / "extraction_report.json").write_text(json.dumps({
                 "total_instances": 18, "total_facts": 42, "total_relations": 16,
                 "relation_types_used": ["operates_in_industry"], "avg_confidence": 0.87,
             }, indent=2), encoding="utf-8")
+            # Round 2 supplementary web evidence reuses the same run dir (extract stage).
+            _write_mock_web_evidence(
+                run_dir, "web_002", "extract",
+                "https://example.com/analytics-subdomains",
+                "Analytics sub-domain taxonomy",
+                "data analytics sub-domains",
+            )
         emit({"type": "stage", "stage": "extract", "status": "running"})
         time.sleep(1.6)
         emit({"type": "stage", "stage": "solve", "status": "running"})
@@ -683,7 +837,8 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
 
     agent_input = content
     if upload_names:
-        paths = [str(Path("otology_agent_workspace/data/uploads") / name) for name in upload_names]
+        upload_root = Path("otology_agent_workspace/data/uploads") / safe_session_id(session_id)
+        paths = [str(upload_root / name) for name in upload_names]
         agent_input = f"{content}\n\nupload_paths: {json.dumps(paths, ensure_ascii=False)}"
 
     loop = asyncio.get_running_loop()
@@ -697,7 +852,7 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
             if MOCK_MODE:
                 final = run_mock_agent(agent_input, session, emit)
             else:
-                final = run_real_agent(agent_input, session["thread_id"], emit)
+                final = run_real_agent(agent_input, session["thread_id"], session_run_dir(session), emit)
             emit({"type": "_done", "final": final})
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a friendly error.
             emit({"type": "_error", "error": f"{type(exc).__name__}: {exc}"})

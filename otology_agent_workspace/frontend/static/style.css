@@ -21,6 +21,7 @@
   --radius-md: 12px;
   --nav-h: 68px;
   --composer-h: 230px;
+  --rail-w: 272px;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'SF Mono', 'Monaco', 'Menlo', 'Courier New', monospace;
 }
@@ -98,6 +99,22 @@ input:focus-visible {
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(18px);
+  transition: left .26s cubic-bezier(.22,.61,.36,1);
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rail-toggle {
+  flex: 0 0 auto;
+}
+
+body:not(.rail-collapsed) .rail-toggle {
+  display: none;
 }
 
 .navbar-content {
@@ -244,6 +261,181 @@ input:focus-visible {
   width: 100%;
   min-height: 100vh;
   padding: calc(var(--nav-h) + 28px) 18px var(--composer-h);
+  transition: padding-left .26s cubic-bezier(.22,.61,.36,1);
+}
+
+/* ── Left session rail (ChatGPT/Claude style) ────────────────────── */
+.side-rail {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 1100;
+  width: var(--rail-w);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 12px 16px;
+  background: color-mix(in srgb, var(--bg-soft) 78%, var(--panel-strong));
+  border-right: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+  transition: transform .26s cubic-bezier(.22,.61,.36,1);
+}
+
+body.rail-collapsed .side-rail {
+  transform: translateX(-100%);
+}
+
+body:not(.rail-collapsed) .navbar {
+  left: var(--rail-w);
+}
+
+body:not(.rail-collapsed) .main-content {
+  padding-left: calc(var(--rail-w) + 18px);
+}
+
+body:not(.rail-collapsed) .input-section {
+  left: var(--rail-w);
+}
+
+.side-rail-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rail-new-chat {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 42px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 80%, var(--panel-strong)), var(--panel-strong));
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+
+.rail-new-chat svg { color: var(--accent); }
+.rail-new-chat:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: 0 12px 26px rgba(37, 99, 235, .16);
+}
+
+.rail-collapse {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.rail-collapse:hover { background: var(--line); color: var(--ink); }
+
+.side-rail-label {
+  padding: 4px 8px 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.side-rail-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  transition: background .14s ease, color .14s ease;
+}
+
+.rail-item:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+.rail-item.active {
+  background: color-mix(in srgb, var(--accent-soft) 85%, transparent);
+  color: var(--accent-strong);
+}
+
+.rail-item-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--ink-muted);
+}
+.rail-item.active .rail-item-icon { color: var(--accent); }
+
+.rail-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-item-delete {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .14s ease, background .14s ease, color .14s ease;
+}
+.rail-item:hover .rail-item-delete { opacity: 1; }
+.rail-item-delete:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+
+.rail-empty {
+  padding: 16px 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+@media (max-width: 900px) {
+  .side-rail {
+    z-index: 1700;
+    box-shadow: var(--shadow);
+  }
+  body:not(.rail-collapsed) .navbar,
+  body:not(.rail-collapsed) .input-section {
+    left: 0;
+  }
+  body:not(.rail-collapsed) .main-content {
+    padding-left: 18px;
+  }
 }
 
 .chat-container {
@@ -1389,6 +1581,7 @@ body.dark-theme .run-model-output code {
   z-index: 900;
   padding: 12px 18px 18px;
   background: linear-gradient(180deg, transparent, var(--bg-soft) 18%, var(--bg-soft) 100%);
+  transition: left .26s cubic-bezier(.22,.61,.36,1);
 }
 
 .input-container {
@@ -5153,19 +5346,26 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .onto-upload-btn span {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--accent-strong);
-  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 82%, var(--panel-strong)), var(--panel-strong));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
   border-radius: 999px;
-  padding: 6px 14px;
+  padding: 7px 15px;
   cursor: pointer;
-  transition: opacity .15s ease;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, .1);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
 
-.onto-upload-btn span:hover { opacity: .85; }
+.onto-upload-btn span:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  box-shadow: 0 8px 20px rgba(37, 99, 235, .18);
+}
 
 .onto-file-list { display: flex; flex-direction: column; gap: 8px; }
 
@@ -5327,23 +5527,33 @@ textarea#message-input.chat-input:focus-visible,
 
 .attach-add-btn {
   flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  margin-left: 4px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255,255,255,0.7);
-  background: rgba(255,255,255,0.14);
+  width: 38px;
+  height: 38px;
+  margin-left: 2px;
+  border-radius: 13px;
+  border: 1px solid rgba(255,255,255,0.55);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.30), rgba(255,255,255,0.12));
   color: #fff;
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 1;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background .15s ease, transform .15s ease;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.45),
+    0 4px 12px rgba(15, 23, 42, 0.18);
+  transition: background .16s ease, transform .16s ease, box-shadow .16s ease, border-color .16s ease;
 }
-.attach-add-btn:hover { background: rgba(255,255,255,0.28); transform: scale(1.06); }
+.attach-add-btn svg { display: block; }
+.attach-add-btn:hover {
+  background: linear-gradient(180deg, rgba(255,255,255,0.46), rgba(255,255,255,0.22));
+  border-color: rgba(255,255,255,0.85);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.55),
+    0 8px 20px rgba(15, 23, 42, 0.24);
+}
+.attach-add-btn:active { transform: translateY(0) scale(0.96); }
 
 .attach-chips {
   position: absolute;

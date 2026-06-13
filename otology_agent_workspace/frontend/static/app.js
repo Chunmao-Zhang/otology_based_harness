@@ -12,13 +12,11 @@
     newChat: document.getElementById('new-chat'),
     brandHome: document.getElementById('brand-home'),
     themeToggle: document.getElementById('theme-toggle'),
-    historyBtn: document.getElementById('history-btn'),
-    historyModal: document.getElementById('history-modal'),
-    historyOverlay: document.getElementById('history-overlay'),
-    historyList: document.getElementById('session-list'),
-    historyCount: document.getElementById('session-count'),
-    historyNewChat: document.getElementById('history-new-chat'),
-    closeHistory: document.getElementById('close-history'),
+    sideRail: document.getElementById('side-rail'),
+    railToggle: document.getElementById('rail-toggle'),
+    railCollapse: document.getElementById('rail-collapse'),
+    railNewChat: document.getElementById('rail-new-chat'),
+    sessionList: document.getElementById('session-list'),
     runIndicator: document.getElementById('run-indicator'),
     runDetail: document.getElementById('run-detail'),
     resetRun: document.getElementById('reset-run'),
@@ -147,6 +145,12 @@
     return blocks.join('');
   }
 
+  function withSession(path) {
+    if (!state.sessionId) return path;
+    const sep = path.includes('?') ? '&' : '?';
+    return `${path}${sep}session_id=${encodeURIComponent(state.sessionId)}`;
+  }
+
   async function api(path, options) {
     const response = await fetch(new URL(path, window.location.origin), options);
     if (!response.ok) {
@@ -192,9 +196,16 @@
     localStorage.setItem('ontology-ui-session', sessionId);
     state.messages = [];
     state.stages = [];
+    state.uploads = [];
+    state.selectedUploads.clear();
+    state.schema = null;
+    state.schemaForm = [];
     connectWs();
     renderMessages();
     renderStageStrip();
+    renderAttachments();
+    renderSessionRail();
+    refreshSidebarData();
   }
 
   function connectWs() {
@@ -223,6 +234,7 @@
     if (payload.type === 'message') {
       state.messages.push(payload.message);
       renderMessages();
+      renderSessionRail();
       return;
     }
     if (payload.type === 'run_start') {
@@ -244,6 +256,7 @@
       renderMessages();
       renderStageStrip();
       refreshSidebarData();
+      renderSessionRail();
       return;
     }
     if (payload.type === 'error') {
@@ -441,6 +454,7 @@
     for (const file of files) {
       const form = new FormData();
       form.append('file', file);
+      form.append('session_id', state.sessionId);
       try {
         const data = await api('/api/uploads', { method: 'POST', body: form });
         if (data.upload && data.upload.id) state.selectedUploads.add(data.upload.id);
@@ -455,7 +469,7 @@
 
   async function refreshUploads() {
     try {
-      const data = await api('/api/uploads');
+      const data = await api(withSession('/api/uploads'));
       state.uploads = data.uploads || [];
       state.selectedUploads.forEach((id) => {
         if (!state.uploads.some((upload) => upload.id === id)) state.selectedUploads.delete(id);
@@ -469,7 +483,7 @@
 
   async function renderEvidenceTab() {
     let evidence = { sources: [], needs_web_search: false };
-    try { evidence = await api('/api/evidence'); } catch (err) { /* ignore */ }
+    try { evidence = await api(withSession('/api/evidence')); } catch (err) { /* ignore */ }
     const uploadsHtml = state.uploads.length
       ? state.uploads.map((upload) => `
           <div class="onto-file-row">
@@ -529,6 +543,7 @@
         if (!file) return;
         const form = new FormData();
         form.append('file', file);
+        form.append('session_id', state.sessionId);
         try {
           await api('/api/uploads', { method: 'POST', body: form });
           await refreshUploads();
@@ -540,7 +555,7 @@
     }
     el.evidenceContent.querySelectorAll('[data-delete]').forEach((button) => {
       button.addEventListener('click', async () => {
-        await api(`/api/uploads/${encodeURIComponent(button.getAttribute('data-delete'))}`, { method: 'DELETE' });
+        await api(withSession(`/api/uploads/${encodeURIComponent(button.getAttribute('data-delete'))}`), { method: 'DELETE' });
         await refreshUploads();
         renderEvidenceTab();
       });
@@ -551,7 +566,7 @@
 
   async function refreshSchema() {
     try {
-      state.schema = await api('/api/schema');
+      state.schema = await api(withSession('/api/schema'));
       state.schemaForm = JSON.parse(JSON.stringify(state.schema.form || []));
       state.schemaDirty = false;
     } catch (err) {
@@ -699,7 +714,7 @@
 
   async function renderProgressTab() {
     let results = { report: {}, answer_sources: [] };
-    try { results = await api('/api/results'); } catch (err) { /* ignore */ }
+    try { results = await api(withSession('/api/results')); } catch (err) { /* ignore */ }
     const stages = state.stages.length ? state.stages : [];
     const stageHtml = stages.length
       ? stages.map((stage) => `
@@ -784,44 +799,60 @@
     });
   }
 
-  // ── History modal ───────────────────────────────────────────────────────
+  // ── Session rail (left sidebar) ─────────────────────────────────────────
 
-  async function openHistory() {
-    const data = await api('/api/sessions');
-    const sessions = data.sessions || [];
-    el.historyCount.textContent = `${sessions.length} record(s)`;
-    el.historyList.innerHTML = sessions.length
+  async function renderSessionRail() {
+    let sessions = [];
+    try {
+      const data = await api('/api/sessions');
+      sessions = data.sessions || [];
+    } catch (err) {
+      sessions = [];
+    }
+    if (!el.sessionList) return;
+    el.sessionList.innerHTML = sessions.length
       ? sessions.map((session) => `
-          <div class="history-item" data-session="${escapeHtml(session.id)}">
-            <div class="history-item-main">
-              <strong>${escapeHtml(session.title || 'New chat')}</strong>
-              <small>${escapeHtml(session.updated_at || '')} · ${session.message_count} message(s)</small>
-            </div>
-            <button class="history-delete" data-delete-session="${escapeHtml(session.id)}" title="Delete session">×</button>
+          <div class="rail-item ${session.id === state.sessionId ? 'active' : ''}" data-session="${escapeHtml(session.id)}" title="${escapeHtml(session.title || 'New chat')}">
+            <span class="rail-item-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 1.5c3.6 0 6.5 2.46 6.5 5.5 0 3.04-2.9 5.5-6.5 5.5-.8 0-1.57-.12-2.27-.34l-3 1.5a.4.4 0 0 1-.57-.42l.5-2.66C1.6 10.06 1.5 8.8 1.5 7 1.5 3.96 4.4 1.5 8 1.5Z"/></svg>
+            </span>
+            <span class="rail-item-title">${escapeHtml(session.title || 'New chat')}</span>
+            <button class="rail-item-delete" data-delete-session="${escapeHtml(session.id)}" title="Delete chat" aria-label="Delete chat">
+              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M6.5 1.5h3a1 1 0 0 1 1 1V3H13a.5.5 0 0 1 0 1h-.55l-.6 8.4a1.5 1.5 0 0 1-1.5 1.4H5.65a1.5 1.5 0 0 1-1.5-1.4L3.55 4H3a.5.5 0 0 1 0-1h2.5v-.5a1 1 0 0 1 1-1Zm-.5 3 .55 7.78a.5.5 0 0 0 .5.47h4.9a.5.5 0 0 0 .5-.47L12.5 4.5h-7Z"/></svg>
+            </button>
           </div>
         `).join('')
-      : '<div class="onto-empty">No previous sessions yet.</div>';
-    el.historyList.querySelectorAll('[data-session]').forEach((item) => {
+      : '<div class="rail-empty">No chats yet. Start a new chat to begin.</div>';
+    el.sessionList.querySelectorAll('[data-session]').forEach((item) => {
       item.addEventListener('click', (event) => {
         if (event.target.closest('[data-delete-session]')) return;
-        closeHistory();
-        startSession(item.getAttribute('data-session'));
+        const id = item.getAttribute('data-session');
+        if (id === state.sessionId) return;
+        startSession(id);
+        if (window.matchMedia('(max-width: 900px)').matches) collapseRail(true);
       });
     });
-    el.historyList.querySelectorAll('[data-delete-session]').forEach((button) => {
+    el.sessionList.querySelectorAll('[data-delete-session]').forEach((button) => {
       button.addEventListener('click', async (event) => {
         event.stopPropagation();
-        await api(`/api/sessions/${button.getAttribute('data-delete-session')}`, { method: 'DELETE' });
-        openHistory();
+        const id = button.getAttribute('data-delete-session');
+        await api(`/api/sessions/${id}`, { method: 'DELETE' });
+        if (id === state.sessionId) {
+          await startSession('');
+        } else {
+          renderSessionRail();
+        }
       });
     });
-    el.historyModal.classList.add('active');
-    el.historyOverlay.classList.add('active');
   }
 
-  function closeHistory() {
-    el.historyModal.classList.remove('active');
-    el.historyOverlay.classList.remove('active');
+  function collapseRail(collapsed) {
+    el.body.classList.toggle('rail-collapsed', collapsed);
+    localStorage.setItem('ontology-ui-rail', collapsed ? 'collapsed' : 'open');
+  }
+
+  function toggleRail() {
+    collapseRail(!el.body.classList.contains('rail-collapsed'));
   }
 
   // ── Input plumbing ──────────────────────────────────────────────────────
@@ -844,7 +875,7 @@
     el.input.addEventListener('input', autoSizeInput);
 
     el.newChat.addEventListener('click', () => startSession(''));
-    if (el.historyNewChat) el.historyNewChat.addEventListener('click', () => { closeHistory(); startSession(''); });
+    if (el.railNewChat) el.railNewChat.addEventListener('click', () => startSession(''));
     el.brandHome.addEventListener('click', () => startSession(''));
     document.addEventListener('keydown', (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
@@ -864,9 +895,8 @@
       el.body.classList.remove('light-theme');
     }
 
-    el.historyBtn.addEventListener('click', openHistory);
-    el.closeHistory.addEventListener('click', closeHistory);
-    el.historyOverlay.addEventListener('click', closeHistory);
+    if (el.railToggle) el.railToggle.addEventListener('click', toggleRail);
+    if (el.railCollapse) el.railCollapse.addEventListener('click', () => collapseRail(true));
 
     el.fabMain.addEventListener('click', toggleFab);
     el.fabEvidence.addEventListener('click', () => openPanel('evidence'));
@@ -893,6 +923,9 @@
 
   async function init() {
     bindEvents();
+    const savedRail = localStorage.getItem('ontology-ui-rail');
+    const startCollapsed = savedRail === 'collapsed' || window.matchMedia('(max-width: 900px)').matches;
+    el.body.classList.toggle('rail-collapsed', startCollapsed);
     await refreshHealth();
     await refreshUploads();
     await refreshSchema();
