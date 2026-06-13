@@ -719,9 +719,18 @@ def stage_activity(stage_id: str, status: str = "running") -> dict[str, Any]:
     return ui_message("event", content, kind="stage", title=title, stage=stage_id, status=status)
 
 
-def tool_activity(tool_name: str) -> dict[str, Any]:
+def tool_activity(tool_name: str, status: str = "running", call_id: str = "", output: str = "") -> dict[str, Any]:
     content = TOOL_ACTIVITY_TEXT.get(tool_name, "Running an internal processing step.")
-    return ui_message("event", content, kind="tool", title="Tool activity", status="running")
+    extra: dict[str, Any] = {"tool": tool_name}
+    if call_id:
+        extra["tool_call_id"] = call_id
+    if status == "done" and output:
+        snippet = " ".join(redact_paths(str(output)).split())
+        if len(snippet) > 240:
+            snippet = snippet[:240].rstrip() + "…"
+        if snippet:
+            extra["tool_output"] = snippet
+    return ui_message("event", content, kind="tool", title="Tool activity", status=status, **extra)
 
 
 def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
@@ -1044,7 +1053,8 @@ def run_subagent_json(
 
     final_content = ""
     emitted_model_output = ""
-    emitted_tools: set[str] = set()
+    seen_calls: set[str] = set()
+    done_calls: set[str] = set()
     tool_call_count = 0
     config = {
         "configurable": {"thread_id": f"{thread_id}:{agent_id}"},
@@ -1112,17 +1122,41 @@ def run_subagent_json(
         last = messages[-1]
         if getattr(last, "type", "") in ("ai", "tool"):
             push_stream(force=True)
-        for call in getattr(last, "tool_calls", None) or []:
-            tool_name = str(call.get("name", ""))
-            tool_call_count += 1
-            if tool_name not in emitted_tools:
-                emitted_tools.add(tool_name)
-                emit({"type": "activity", "message": tool_activity(tool_name)})
-            if tool_call_count >= max_tool_calls:
-                parsed = extract_json_payload(final_content)
-                parsed["_raw"] = final_content
-                parsed["_truncated"] = True
-                return parsed
+        # Emit one "running" activity per tool call and one "done" activity per
+        # tool result, correlated by tool_call_id. This mirrors the reference
+        # frontend's tool_call/tool_end stream so the UI can show each tool and
+        # its output in real time instead of a single static line.
+        truncated = False
+        for msg in messages:
+            mtype = getattr(msg, "type", "")
+            if mtype == "ai":
+                for idx, call in enumerate(getattr(msg, "tool_calls", None) or []):
+                    cid = str(call.get("id") or f"{call.get('name', '')}:{idx}")
+                    if cid in seen_calls:
+                        continue
+                    seen_calls.add(cid)
+                    tool_name = str(call.get("name", ""))
+                    tool_call_count += 1
+                    if tool_name and tool_name != "task":
+                        emit({"type": "activity", "message": tool_activity(tool_name, status="running", call_id=cid)})
+                    if tool_call_count >= max_tool_calls:
+                        truncated = True
+            elif mtype == "tool":
+                cid = str(getattr(msg, "tool_call_id", "") or "")
+                if not cid or cid in done_calls:
+                    continue
+                done_calls.add(cid)
+                tool_name = str(getattr(msg, "name", "") or "")
+                result = getattr(msg, "content", "")
+                if isinstance(result, list):
+                    result = " ".join(str(part) for part in result)
+                if tool_name and tool_name != "task":
+                    emit({"type": "activity", "message": tool_activity(tool_name, status="done", call_id=cid, output=str(result))})
+        if truncated:
+            parsed = extract_json_payload(final_content)
+            parsed["_raw"] = final_content
+            parsed["_truncated"] = True
+            return parsed
         if getattr(last, "type", "") == "ai":
             content = getattr(last, "content", "") or ""
             if isinstance(content, list):

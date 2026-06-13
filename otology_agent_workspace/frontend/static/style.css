@@ -6887,3 +6887,122 @@ body.modal-open { overflow: hidden; }
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+
+/* ── Per-tool log (each tool call → its own row + output) ─────────────── */
+.run-tool-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tool-log-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+
+.tool-log-row .tool-log-status {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.tool-log-row.done .tool-log-status {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.tool-log-row.running .tool-log-status {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.tool-log-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tool-log-main strong {
+  font-size: 12.5px;
+  font-weight: 680;
+  color: var(--ink);
+}
+
+.tool-log-output {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* ── Collapsed run group (earlier phases) ────────────────────────────── */
+.stage-pipeline-message.collapsed-group {
+  align-items: center;
+}
+
+.stage-group-summary {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  padding: 12px 14px;
+}
+
+.stage-group-summary-head,
+.stage-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stage-group-head {
+  margin-bottom: 8px;
+}
+
+.stage-group-summary-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.stage-group-summary-title .run-check {
+  color: var(--success);
+  font-weight: 800;
+}
+
+.stage-group-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.stage-done-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}

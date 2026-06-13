@@ -71,6 +71,7 @@
     isComposing: false,
     activeClarificationMessageId: '',
     expandedStageCards: new Set(),
+    expandedGroups: new Set(),
     forceScroll: false,
     liveStream: {},
     toolKeys: {},
@@ -717,7 +718,7 @@
       status: (stage && stage.status) || 'running',
       thinking: '',
       output: '',
-      tools: [],
+      toolSteps: [],
     };
   }
 
@@ -748,18 +749,24 @@
         if (!stageId) return;
         if (!cards.has(stageId)) cards.set(stageId, makeStageCard(stageId, stageById(stageId)?.label));
         const card = cards.get(stageId);
-        const content = normalizeActivityText(message.content || 'Running an internal tool.');
-        if (content && !card.tools.includes(content)) card.tools.push(content);
-        if (message.thinking) card.thinking = normalizeActivityText(message.thinking);
-        if (message.output) card.output = normalizeActivityText(message.output);
+        const label = normalizeActivityText(message.content || 'Running an internal tool.');
+        const stepStatus = message.status === 'done' ? 'done' : 'running';
+        const stepOutput = message.tool_output ? normalizeActivityText(message.tool_output) : '';
+        const cid = message.tool_call_id || `${stageId}:${label}`;
+        let step = card.toolSteps.find((item) => item.id === cid);
+        if (!step) {
+          step = { id: cid, label, status: stepStatus, output: stepOutput };
+          card.toolSteps.push(step);
+        } else {
+          if (label) step.label = label;
+          if (stepStatus === 'done') step.status = 'done';
+          if (stepOutput) step.output = stepOutput;
+        }
       }
     });
-    // Make sure stages that only have a live token stream still get a card.
-    Object.keys(state.liveStream || {}).forEach((stageId) => {
-      if (!cards.has(stageId) && (stageById(stageId) || {}).status !== 'pending') {
-        cards.set(stageId, makeStageCard(stageId, (stageById(stageId) || {}).label));
-      }
-    });
+    // Cards come only from this group's own event buffer; we never inject the
+    // global live-stream stages here (doing so leaked a later run's stages into
+    // earlier run groups). liveStream is used purely to enrich existing cards.
     return (state.stages || [])
       .filter((stage) => stage.status !== 'pending' && cards.has(stage.id))
       .map((stage) => {
@@ -782,14 +789,16 @@
   // actually changes, instead of growing an ever-longer list.
   function renderTaskToolActivity(card, status) {
     const running = status === 'running';
-    const tools = card.tools || [];
-    const stepCount = tools.length;
-    const latest = stepCount ? tools[stepCount - 1] : '';
+    const steps = card.toolSteps || [];
+    const stepCount = steps.length;
+    const latestStep = stepCount ? steps[stepCount - 1] : null;
+    const latest = latestStep ? latestStep.label : '';
+    const latestDone = latestStep ? latestStep.status === 'done' : false;
 
     let swapped = false;
-    if (running && latest) {
+    if (running && latestStep) {
       if (!state.toolKeys) state.toolKeys = {};
-      const key = `${card.id}:${latest}`;
+      const key = `${card.id}:${latestStep.id}:${latestStep.status}`;
       swapped = state.toolKeys[card.id] !== key;
       state.toolKeys[card.id] = key;
     }
@@ -803,7 +812,12 @@
     } else if (status === 'waiting') {
       statusClass = 'complete';
       label = 'Ready';
-    } else if (running && latest) {
+    } else if (running && latestStep && latestDone) {
+      // The current tool just finished; show its Done state until the next
+      // tool starts, exactly like the reference UI's tool_end transition.
+      statusClass = 'done';
+      label = 'Done';
+    } else if (running && latestStep) {
       statusClass = 'calling';
       label = 'Working';
       showDots = true;
@@ -820,7 +834,7 @@
     let detail;
     if (latest) {
       title = latest;
-      detail = status === 'done' ? '' : (card.title || '');
+      detail = latestDone ? (latestStep.output || '') : (card.title || '');
     } else if (status === 'done' || status === 'waiting') {
       title = `${card.title || 'This step'} ready`;
       detail = '';
@@ -863,13 +877,28 @@
     const isRunning = status === 'running';
     if (isPending) return '';
     const expanded = isRunning || isWaiting || state.expandedStageCards.has(card.id);
-    const toolCount = Math.max(card.tools.length, 1);
+    const steps = card.toolSteps || [];
+    const toolCount = Math.max(steps.length, 1);
     const thinking = card.thinking || '';
     const output = card.output || '';
+    const toolLogHtml = steps.length ? `
+      <div class="run-tool-log">
+        ${steps.map((step) => `
+          <div class="tool-log-row ${step.status === 'done' ? 'done' : 'running'}">
+            <span class="tool-log-status">${step.status === 'done' ? '✓' : '●'}</span>
+            <div class="tool-log-main">
+              <strong>${escapeHtml(sanitizeDisplayText(step.label || 'Tool'))}</strong>
+              ${step.output ? `<span class="tool-log-output">${escapeHtml(sanitizeDisplayText(step.output))}</span>` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
     const detailHtml = `
       <div class="run-tool-pane">
         <span class="run-section-label">Tool activity</span>
         ${renderTaskToolActivity(card, status)}
+        ${toolLogHtml}
       </div>
       <div class="run-reasoning-pane">
         <span class="run-section-label">Model thinking</span>
@@ -917,12 +946,42 @@
     `;
   }
 
-  function renderStagePipeline(cards, isLatest) {
+  function renderStagePipeline(cards, isLatest, groupKey) {
     if (!cards.length) return '';
+    const stepWord = cards.length > 1 ? 'steps' : 'step';
+    const summaryTitle = `<span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>`;
+    // Earlier runs collapse to a compact summary so a finished phase never
+    // competes for attention with the phase that is currently running. Only
+    // the latest run group stays fully expanded with live activity.
+    const collapsible = !isLatest;
+    const expanded = !collapsible || state.expandedGroups.has(groupKey);
+    if (collapsible && !expanded) {
+      return `
+        <article class="message event stage-pipeline-message collapsed-group">
+          <div class="avatar stage-pipeline-avatar">O</div>
+          <div class="stage-group-summary">
+            <div class="stage-group-summary-head">
+              ${summaryTitle}
+              <button class="task-toggle-button" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="false">Show details</button>
+            </div>
+            <div class="stage-group-chips">
+              ${cards.map((card) => `<span class="stage-done-chip">✓ ${escapeHtml(card.title)}</span>`).join('')}
+            </div>
+          </div>
+        </article>
+      `;
+    }
+    const groupHead = collapsible ? `
+      <div class="stage-group-head">
+        ${summaryTitle}
+        <button class="task-toggle-button" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="true">Hide</button>
+      </div>
+    ` : '';
     return `
       <article class="message event stage-pipeline-message">
         <div class="avatar stage-pipeline-avatar">O</div>
         <div class="task-node-list">
+          ${groupHead}
           ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
         </div>
       </article>
@@ -935,11 +994,17 @@
     const flushEvents = () => {
       if (!eventBuffer.length) return;
       const cards = buildStageCards(eventBuffer);
-      if (cards.length) items.push({ role: 'pipeline', cards });
+      if (cards.length) {
+        const groupKey = cards.map((card) => card.id).join('-');
+        items.push({ role: 'pipeline', cards, groupKey });
+      }
       eventBuffer = [];
     };
     messages.forEach((message) => {
       if (message.role === 'event') {
+        // A run_start marks the boundary of a new run: flush the previous run's
+        // events into their own group so stages never bleed across runs.
+        if (message.kind === 'run_start' && eventBuffer.length) flushEvents();
         eventBuffer.push(message);
         return;
       }
@@ -948,7 +1013,7 @@
     });
     flushEvents();
     if (!items.some((item) => item.role === 'pipeline') && (state.stages || []).some((stage) => stage.status !== 'pending')) {
-      items.push({ role: 'pipeline', cards: buildStageCards([]) });
+      items.push({ role: 'pipeline', cards: buildStageCards([]), groupKey: 'live' });
     }
     // Only the final pipeline group (the current run) may show live "working"
     // state; everything above it renders as completed.
@@ -1097,7 +1162,7 @@
     el.messages.classList.toggle('active', visible.length > 0);
     el.messages.innerHTML = buildMessageTimeline(visible).map((message) => {
       if (message.role === 'pipeline') {
-        return renderStagePipeline(message.cards || [], message.isLatest);
+        return renderStagePipeline(message.cards || [], message.isLatest, message.groupKey);
       }
       if (message.role === 'user') {
         const uploads = (message.uploads || []).length
@@ -1132,6 +1197,23 @@
             .filter((item) => item.getAttribute('data-stage-card') === stageId);
           const nextButton = nextButtons[Math.min(stageIndex, nextButtons.length - 1)];
           const nextAnchor = nextButton?.closest('.task-node') || nextButton;
+          if (!nextAnchor) return;
+          window.scrollBy(0, nextAnchor.getBoundingClientRect().top - anchorTop);
+        });
+      });
+    });
+    el.messages.querySelectorAll('[data-stage-group]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const key = button.getAttribute('data-stage-group');
+        if (!key) return;
+        const anchor = button.closest('.stage-pipeline-message') || button;
+        const anchorTop = anchor.getBoundingClientRect().top;
+        if (state.expandedGroups.has(key)) state.expandedGroups.delete(key);
+        else state.expandedGroups.add(key);
+        renderMessages({ preserveScroll: true });
+        window.requestAnimationFrame(() => {
+          const nextButton = el.messages.querySelector(`[data-stage-group="${(window.CSS && CSS.escape) ? CSS.escape(key) : key}"]`);
+          const nextAnchor = nextButton?.closest('.stage-pipeline-message') || nextButton;
           if (!nextAnchor) return;
           window.scrollBy(0, nextAnchor.getBoundingClientRect().top - anchorTop);
         });
