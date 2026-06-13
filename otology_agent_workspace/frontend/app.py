@@ -1342,31 +1342,50 @@ def _instance_rows(data: Any) -> int:
     return sum(len(v) for v in data.values() if isinstance(v, list))
 
 
-def recover_instances_from_siblings(instances_path: Path) -> dict[str, Any] | None:
-    """The extractor sometimes writes real data to a scratch file (e.g.
-    instances_final.json) and leaves data/instances.json empty. Promote the most
-    populated sibling instances*.json back to the canonical instances.json."""
+def select_best_instances(
+    instances_path: Path, confirmed_path: Path
+) -> dict[str, Any] | None:
+    """Pick the best instances payload across the canonical file and any sibling
+    scratch files, then promote it back to data/instances.json.
+
+    The data_extractor only has `write_file`, which refuses to overwrite an
+    existing file, so when its first instances.json fails schema validation it
+    writes the corrected payload to a new path (e.g. instances_final.json,
+    instances_v2.json). We therefore consider every instances*.json file and
+    prefer the schema-conforming one with the most rows; if none conform we fall
+    back to the most populated payload so the correction retry still has data."""
     data_dir = instances_path.parent
     if not data_dir.exists():
         return None
-    best: dict[str, Any] | None = None
-    best_rows = 0
+    best_valid: dict[str, Any] | None = None
+    best_valid_rows = -1
+    best_any: dict[str, Any] | None = None
+    best_any_rows = -1
     for path in sorted(data_dir.glob("instances*.json")):
-        if path.name == instances_path.name:
-            continue
         try:
             candidate = read_json(path)
         except Exception:
             continue
+        if not isinstance(candidate, dict):
+            continue
         rows = _instance_rows(candidate)
-        if isinstance(candidate, dict) and rows > best_rows:
-            best, best_rows = candidate, rows
-    if best is not None and best_rows > 0:
-        instances_path.write_text(
-            json.dumps(best, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return best
-    return None
+        if rows <= 0:
+            continue
+        if rows > best_any_rows:
+            best_any, best_any_rows = candidate, rows
+        try:
+            conforms = validate_instances(candidate, confirmed_path).get("ok", False)
+        except Exception:
+            conforms = False
+        if conforms and rows > best_valid_rows:
+            best_valid, best_valid_rows = candidate, rows
+    chosen = best_valid if best_valid is not None else best_any
+    if chosen is None:
+        return None
+    instances_path.write_text(
+        json.dumps(chosen, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return chosen
 
 
 def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
@@ -1402,21 +1421,25 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         stage_id="extract",
     )
     # The extractor is the most tool-heavy step; retry once if it produced no
-    # instances or instances that do not conform to the confirmed schema.
-    instances = read_json(instances_path) if instances_path.exists() else None
-    if _instance_rows(instances) == 0:
-        instances = recover_instances_from_siblings(instances_path) or instances
+    # instances or instances that do not conform to the confirmed schema. The
+    # extractor cannot overwrite files, so it may have written the conforming
+    # payload to a sibling path; promote the best conforming candidate.
+    instances = select_best_instances(instances_path, confirmed_path)
+    if instances is None:
+        instances = read_json(instances_path) if instances_path.exists() else None
     validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
     if not instances or _instance_rows(instances) == 0 or not validation.get("ok"):
         correction = dict(extract_payload)
         correction["correction"] = {
             "message": (
                 "Your previous attempt did not produce a valid, populated "
-                "data/instances.json. Write every extracted instance to exactly "
-                "data/instances.json (do NOT use alternate files like "
-                "instances_final.json). Use ONLY the confirmed schema's exact entity "
-                "class names as top-level keys and ONLY their declared fields."
+                "instances payload. write_file cannot overwrite an existing file, "
+                "so write the COMPLETE corrected collection to a NEW path "
+                "data/instances_final.json in a single write_file call. Use ONLY "
+                "the confirmed schema's exact entity class names as top-level keys "
+                "and ONLY their declared fields (no extra or misspelled fields)."
             ),
+            "instances_path": f"{vrun}/data/instances_final.json",
             "required_concepts": validation.get("schema_concepts", []),
         }
         run_subagent_json(
@@ -1428,9 +1451,9 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
             max_tool_calls=48,
             stage_id="extract",
         )
-        instances = read_json(instances_path) if instances_path.exists() else None
-        if _instance_rows(instances) == 0:
-            instances = recover_instances_from_siblings(instances_path) or instances
+        instances = select_best_instances(instances_path, confirmed_path)
+        if instances is None:
+            instances = read_json(instances_path) if instances_path.exists() else None
         validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
     if not instances or _instance_rows(instances) == 0:
         return "Data extraction did not produce instances; please retry."
