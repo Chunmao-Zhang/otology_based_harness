@@ -38,6 +38,11 @@
     evidenceContent: document.getElementById('evidence-content'),
     schemaContent: document.getElementById('schema-content'),
     progressContent: document.getElementById('progress-content'),
+    confirmOverlay: document.getElementById('confirm-overlay'),
+    confirmTitle: document.getElementById('confirm-title'),
+    confirmText: document.getElementById('confirm-text'),
+    confirmOk: document.getElementById('confirm-ok'),
+    confirmCancel: document.getElementById('confirm-cancel'),
   };
 
   const state = {
@@ -836,14 +841,49 @@
       button.addEventListener('click', async (event) => {
         event.stopPropagation();
         const id = button.getAttribute('data-delete-session');
+        const ok = await confirmDialog({
+          title: 'Delete chat?',
+          text: 'This conversation and its files, evidence and results will be permanently removed. This cannot be undone.',
+          confirmLabel: 'Delete',
+        });
+        if (!ok) return;
         await api(`/api/sessions/${id}`, { method: 'DELETE' });
         if (id === state.sessionId) {
-          await startSession('');
+          let remaining = [];
+          try {
+            const data = await api('/api/sessions');
+            remaining = (data.sessions || []).filter((s) => s.id !== id);
+          } catch (err) { remaining = []; }
+          await startSession(remaining.length ? remaining[0].id : '');
         } else {
           renderSessionRail();
         }
       });
     });
+  }
+
+  // ── Confirm dialog ──────────────────────────────────────────────────────
+
+  let confirmResolver = null;
+
+  function confirmDialog({ title, text, confirmLabel } = {}) {
+    if (!el.confirmOverlay) {
+      return Promise.resolve(window.confirm(text || 'Are you sure?'));
+    }
+    if (title) el.confirmTitle.textContent = title;
+    if (text) el.confirmText.textContent = text;
+    if (confirmLabel) el.confirmOk.textContent = confirmLabel;
+    el.confirmOverlay.hidden = false;
+    requestAnimationFrame(() => el.confirmOk.focus());
+    return new Promise((resolve) => { confirmResolver = resolve; });
+  }
+
+  function closeConfirm(result) {
+    if (!el.confirmOverlay) return;
+    el.confirmOverlay.hidden = true;
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    if (resolve) resolve(result);
   }
 
   function collapseRail(collapsed) {
@@ -897,6 +937,15 @@
 
     if (el.railToggle) el.railToggle.addEventListener('click', toggleRail);
     if (el.railCollapse) el.railCollapse.addEventListener('click', () => collapseRail(true));
+
+    if (el.confirmCancel) el.confirmCancel.addEventListener('click', () => closeConfirm(false));
+    if (el.confirmOk) el.confirmOk.addEventListener('click', () => closeConfirm(true));
+    if (el.confirmOverlay) el.confirmOverlay.addEventListener('click', (event) => {
+      if (event.target === el.confirmOverlay) closeConfirm(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && el.confirmOverlay && !el.confirmOverlay.hidden) closeConfirm(false);
+    });
 
     el.fabMain.addEventListener('click', toggleFab);
     el.fabEvidence.addEventListener('click', () => openPanel('evidence'));
