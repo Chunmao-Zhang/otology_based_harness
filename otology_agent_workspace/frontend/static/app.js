@@ -801,6 +801,7 @@
     if (!cards.length) return '';
     return `
       <article class="message event stage-pipeline-message">
+        <div class="avatar stage-pipeline-avatar">O</div>
         <div class="task-node-list">
           ${cards.map(renderTaskNode).join('')}
         </div>

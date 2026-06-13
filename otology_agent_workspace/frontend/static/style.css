@@ -6403,19 +6403,37 @@ body.dark-theme .pretty-code {
 }
 
 .task-node.done .task-node-icon::after {
+  content: none;
+}
+
+.task-node.done .task-node-head small {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-muted);
+}
+
+.task-node.done .task-node-head small::before {
   content: "✓";
-  position: absolute;
-  transform: translate(12px, -12px);
-  width: 16px;
-  height: 16px;
   display: grid;
   place-items: center;
-  border: 2px solid var(--panel-strong);
+  width: 15px;
+  height: 15px;
   border-radius: 999px;
   background: var(--success);
   color: #fff;
   font-size: 10px;
   line-height: 1;
+}
+
+.stage-pipeline-avatar {
+  width: 36px;
+  height: 36px;
+  margin-top: 8px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #2563eb, #0f172a);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, .20);
+  font-size: 14px;
 }
 
 .task-node-icon {
