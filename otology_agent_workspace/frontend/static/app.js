@@ -285,6 +285,7 @@
       if (payload.stages) state.stages = payload.stages;
       renderStageStrip();
       renderProgressTab();
+      renderMessages();
       if (payload.status === 'running' && payload.detail) {
         el.runDetail.textContent = payload.detail;
       }
@@ -405,7 +406,14 @@
   }
 
   function renderActivity(message) {
-    const status = message.status || 'running';
+    let status = message.status || 'running';
+    if (message.kind === 'stage' && message.stage) {
+      const current = (state.stages || []).find((stage) => stage.id === message.stage);
+      if (current && current.status) status = current.status;
+    }
+    if (message.kind === 'run_start' && (state.stages || []).some((stage) => stage.status !== 'pending')) {
+      status = 'done';
+    }
     const title = message.title || 'Processing step';
     return `
       <article class="message event">

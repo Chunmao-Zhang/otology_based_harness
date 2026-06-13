@@ -5461,6 +5461,8 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .activity-card.running .activity-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning) 16%, transparent);
   animation: onto-pulse 1.2s ease-in-out infinite;
 }
 
@@ -5470,8 +5472,8 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .activity-card.done .activity-dot {
-  background: var(--success);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 16%, transparent);
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .activity-card p {
@@ -5533,9 +5535,14 @@ textarea#message-input.chat-input:focus-visible,
   gap: 16px;
 }
 
-.clarification-actions .gate-confirm,
+.clarification-actions .gate-confirm {
+  min-width: 228px;
+}
+
 .clarification-actions .gate-edit {
-  min-width: 148px;
+  min-width: 108px;
+  padding-right: 20px;
+  padding-left: 20px;
 }
 
 .onto-btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -5587,8 +5594,8 @@ textarea#message-input.chat-input:focus-visible,
 }
 
 .onto-stage-chip i { font-style: normal; font-size: 9px; }
-.onto-stage-chip.done { color: var(--success); }
-.onto-stage-chip.running { color: var(--accent-strong); }
+.onto-stage-chip.done { color: var(--accent-strong); }
+.onto-stage-chip.running { color: var(--warning); }
 .onto-stage-chip.running i { animation: onto-pulse 1.2s ease-in-out infinite; }
 .onto-stage-chip.waiting { color: var(--warning); }
 
@@ -5768,13 +5775,13 @@ textarea#message-input.chat-input:focus-visible,
   color: var(--ink-muted);
 }
 
-.onto-stage-row.running { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); color: var(--accent-strong); }
+.onto-stage-row.running { background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--warning); }
 .onto-stage-row.waiting { background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--warning); }
-.onto-stage-row.done { color: var(--ink-soft); }
+.onto-stage-row.done { color: var(--accent-strong); }
 
 .onto-stage-dot { width: 18px; text-align: center; }
 .onto-stage-dot i { font-style: normal; font-size: 11px; }
-.onto-stage-row.done .onto-stage-dot { color: var(--success); }
+.onto-stage-row.done .onto-stage-dot { color: var(--accent-strong); }
 .onto-stage-row.running .onto-stage-dot i { animation: onto-pulse 1.2s ease-in-out infinite; }
 
 .onto-stage-label { flex: 1; font-weight: 500; }
