@@ -73,6 +73,7 @@
     let safe = escapeHtml(text);
     safe = safe.replace(/`([^`]+)`/g, '<code>$1</code>');
     safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     return safe;
   }
 
@@ -92,6 +93,11 @@
     while (index < lines.length) {
       const trimmed = lines[index].trim();
       if (!trimmed) { index += 1; continue; }
+      if (/^---+$/.test(trimmed)) {
+        blocks.push('<hr>');
+        index += 1;
+        continue;
+      }
       if (trimmed.startsWith('```')) {
         const code = [];
         index += 1;
@@ -101,6 +107,15 @@
         }
         if (index < lines.length) index += 1;
         blocks.push(`<pre><code class="language-python">${escapeHtml(code.join('\n'))}</code></pre>`);
+        continue;
+      }
+      if (trimmed.startsWith('>')) {
+        const quote = [];
+        while (index < lines.length && lines[index].trim().startsWith('>')) {
+          quote.push(lines[index].trim().replace(/^>\s?/, ''));
+          index += 1;
+        }
+        blocks.push(`<blockquote>${quote.map(formatInline).join('<br>')}</blockquote>`);
         continue;
       }
       if (isTableRow(lines[index]) && index + 1 < lines.length && /^\|[\s\-|:]+\|$/.test(lines[index + 1].trim())) {
@@ -122,12 +137,12 @@
         index += 1;
         continue;
       }
-      const listType = /^[-*]\s+/.test(trimmed) ? 'ul' : (/^\d+\.\s+/.test(trimmed) ? 'ol' : '');
+      const listType = /^[-*]\s+/.test(trimmed) ? 'ul' : (/^\d+[.\u3001)]\s+/.test(trimmed) ? 'ol' : '');
       if (listType) {
         const items = [];
         while (index < lines.length) {
           const item = lines[index].trim();
-          const match = listType === 'ul' ? item.match(/^[-*]\s+(.+)$/) : item.match(/^\d+\.\s+(.+)$/);
+          const match = listType === 'ul' ? item.match(/^[-*]\s+(.+)$/) : item.match(/^\d+[.\u3001)]\s+(.+)$/);
           if (!match) break;
           items.push(`<li>${formatInline(match[1])}</li>`);
           index += 1;
@@ -141,7 +156,7 @@
         && !isTableRow(lines[index])
         && !/^(#{1,3})\s+/.test(lines[index].trim())
         && !/^[-*]\s+/.test(lines[index].trim())
-        && !/^\d+\.\s+/.test(lines[index].trim())) {
+        && !/^\d+[.\u3001)]\s+/.test(lines[index].trim())) {
         paragraph.push(lines[index]);
         index += 1;
       }
@@ -255,6 +270,11 @@
       }
       return;
     }
+    if (payload.type === 'activity') {
+      state.messages.push(payload.message);
+      renderMessages();
+      return;
+    }
     if (payload.type === 'assistant_final') {
       state.messages.push(payload.message);
       if (payload.stages) state.stages = payload.stages;
@@ -316,6 +336,53 @@
         <button class="gate-confirm" data-action="confirm">Confirm &amp; continue</button>
         ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>' : ''}
       </div>
+    `;
+  }
+
+  function renderClarificationCard(clarification) {
+    const steps = (clarification.steps || [])
+      .map((step, index) => `<li><span>${index + 1}</span><p>${formatInline(step)}</p></li>`)
+      .join('');
+    return `
+      <section class="clarification-card">
+        <div class="clarification-head">
+          <span class="clarification-kicker">Problem clarification</span>
+          <h3>问题澄清</h3>
+        </div>
+        <div class="clarification-problem">
+          <span>核心问题</span>
+          <strong>${formatInline(clarification.problem || '')}</strong>
+        </div>
+        <div class="clarification-plan">
+          <span>计划步骤</span>
+          <ol>${steps}</ol>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAssistantContent(message) {
+    if (message.clarification) {
+      return `${renderClarificationCard(message.clarification)}${gateActions(message)}`;
+    }
+    return `${formatMarkdown(message.content)}${gateActions(message)}`;
+  }
+
+  function renderActivity(message) {
+    const status = message.status || 'running';
+    const title = message.title || 'Processing step';
+    return `
+      <article class="message event">
+        <div class="avatar activity-avatar">•</div>
+        <div class="activity-card ${escapeHtml(status)}">
+          <div class="activity-card-head">
+            <span class="activity-dot"></span>
+            <strong>${escapeHtml(title)}</strong>
+            <small>${status === 'waiting' ? 'Waiting' : status === 'done' ? 'Done' : 'Working'}</small>
+          </div>
+          <p>${formatInline(message.content || '')}</p>
+        </div>
+      </article>
     `;
   }
 
@@ -383,7 +450,7 @@
   }
 
   function renderMessages() {
-    const visible = state.messages.filter((message) => ['user', 'assistant', 'system'].includes(message.role));
+    const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
     el.messages.innerHTML = visible.map((message) => {
@@ -397,9 +464,12 @@
         return `
           <article class="message assistant">
             <div class="avatar">O</div>
-            <div class="bubble">${formatMarkdown(message.content)}${gateActions(message)}</div>
+            <div class="bubble">${renderAssistantContent(message)}</div>
           </article>
         `;
+      }
+      if (message.role === 'event') {
+        return renderActivity(message);
       }
       return `<article class="message system"><div class="bubble">${escapeHtml(message.content || '')}</div></article>`;
     }).join('');

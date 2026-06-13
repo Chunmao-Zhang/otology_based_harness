@@ -80,6 +80,30 @@ STAGE_RUNNING_TEXT = {
     "solve": "Executing code in the workspace to solve the question…",
 }
 
+STAGE_ACTIVITY_TEXT = {
+    "clarify": "正在理解问题并整理可确认的任务描述。",
+    "confirm_problem": "已整理出问题澄清结果，等待你确认后继续。",
+    "evidence": "正在整理本地文件和必要的公开证据。",
+    "schema_build": "正在把证据转成可编辑的 ontology schema。",
+    "schema_judge": "正在检查当前 schema 是否足够回答问题。",
+    "confirm_schema": "schema 已准备好，等待你确认后再抽取数据。",
+    "extract": "正在按确认后的 schema 抽取实例、属性和关系。",
+    "solve": "正在进入 workspace，用代码基于抽取结果生成答案。",
+}
+
+TOOL_ACTIVITY_TEXT = {
+    "source_reader": "正在读取并抽样分析上传文件。",
+    "evidence_retriever": "正在从已整理证据中检索相关片段。",
+    "web_search": "正在补充必要的公开网页证据。",
+    "schema_validator": "正在校验 schema 的实体、字段和关系约束。",
+    "schema_draft_builder": "正在生成 draft schema 文件。",
+    "evidence_manifest_writer": "正在保存证据清单。",
+    "data_extract_company_csv": "正在从表格证据中抽取结构化实例。",
+    "workspace_builder_tool": "正在构建可执行的求解 workspace。",
+    "workspace_solver_tool": "正在执行 workspace 求解流程。",
+    "execute_code": "正在运行求解代码并读取执行结果。",
+}
+
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -544,6 +568,19 @@ def ui_message(role: str, content: str = "", **extra: Any) -> dict[str, Any]:
     return message
 
 
+def stage_activity(stage_id: str, status: str = "running") -> dict[str, Any]:
+    title = stage_label(stage_id)
+    content = STAGE_ACTIVITY_TEXT.get(stage_id, STAGE_RUNNING_TEXT.get(stage_id, title))
+    if status == "done":
+        content = f"{title} 已完成。"
+    return ui_message("event", content, kind="stage", title=title, stage=stage_id, status=status)
+
+
+def tool_activity(tool_name: str) -> dict[str, Any]:
+    content = TOOL_ACTIVITY_TEXT.get(tool_name, "正在执行一个内部处理步骤。")
+    return ui_message("event", content, kind="tool", title="处理步骤", status="running")
+
+
 def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
     order = [s["id"] for s in PIPELINE_STAGES]
     if stage_id not in order:
@@ -582,7 +619,7 @@ def extract_clarification(text: str) -> dict[str, Any] | None:
     steps: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        match = re.match(r"^\*?\*?(?:Question|\u95ee\u9898)\*?\*?[:\uff1a]\s*(.+)$", stripped)
+        match = re.match(r"^\*{0,2}(?:Question|\u95ee\u9898|\u6838\u5fc3\u95ee\u9898)\s*[:\uff1a]\*{0,2}\s*(.+)$", stripped)
         if match and not problem:
             problem = match.group(1).strip()
             continue
@@ -597,8 +634,12 @@ def extract_clarification(text: str) -> dict[str, Any] | None:
 def detect_gate(text: str) -> str:
     """Infer which confirmation gate the coordinator is waiting on."""
     lowered = text.lower()
-    if "schema" in lowered and ("确认" in text or "confirm" in lowered):
+    if re.search(r"(draft\s+schema|schema\s+is\s+ready|schema\s+ready|answerability\s+judgment|relation\s+table|confirm\s+.{0,24}schema)", lowered):
         return "confirm_schema"
+    if re.search(r"(草案\s*schema|schema\s*(已准备|准备好|可确认)|确认.{0,12}(schema|模式|本\s*schema|当前\s*schema|草案))", text, flags=re.IGNORECASE):
+        return "confirm_schema"
+    if re.search(r"(问题澄清|核心问题|clarified\s+problem|understanding\s+of\s+the\s+question|please\s+confirm|confirm\s+the\s+clarified)", lowered):
+        return "confirm_problem"
     if "确认" in text or "confirm" in lowered:
         return "confirm_problem"
     return ""
@@ -657,7 +698,9 @@ def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
         msg_type = getattr(last, "type", "")
         tool_calls = getattr(last, "tool_calls", None) or []
         for call in tool_calls:
-            if call.get("name") != "task":
+            tool_name = str(call.get("name", ""))
+            if tool_name != "task":
+                emit({"type": "activity", "message": tool_activity(tool_name)})
                 continue
             args = call.get("args", {}) or {}
             subagent = str(args.get("subagent_type", "") or args.get("agent", ""))
@@ -834,6 +877,17 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
     STORE.save(session)
     await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
     await websocket.send_text(json.dumps({"type": "run_start"}, ensure_ascii=False))
+    activity_seen: set[str] = set()
+    start_activity = ui_message(
+        "event",
+        "收到问题，开始按 ontology QA 流程处理；下面会持续展示阶段进展。",
+        kind="run_start",
+        title="开始处理",
+        status="running",
+    )
+    session["messages"].append(start_activity)
+    STORE.save(session)
+    await websocket.send_text(json.dumps({"type": "activity", "message": start_activity}, ensure_ascii=False))
 
     agent_input = content
     if upload_names:
@@ -872,18 +926,27 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
                 final = str(event.get("final", "")).strip()
                 session = STORE.get(session_id)
                 if final:
-                    gate = detect_gate(final)
-                    clarification = None
+                    clarification = extract_clarification(final)
+                    gate = "confirm_problem" if clarification else detect_gate(final)
                     if gate:
-                        set_stage(session, gate, "waiting")
-                        await websocket.send_text(json.dumps(
-                            {"type": "stage", "stage": gate, "status": "waiting", "label": stage_label(gate)},
-                            ensure_ascii=False,
-                        ))
-                        if gate == "confirm_problem":
-                            clarification = extract_clarification(final)
-                            if clarification:
-                                session["clarification"] = {**clarification, "status": "draft"}
+                        already_waiting = any(
+                            item.get("id") == gate and item.get("status") == "waiting"
+                            for item in session.get("stages", [])
+                        )
+                        if not already_waiting:
+                            set_stage(session, gate, "waiting")
+                            await websocket.send_text(json.dumps(
+                                {"type": "stage", "stage": gate, "status": "waiting", "label": stage_label(gate)},
+                                ensure_ascii=False,
+                            ))
+                        key = f"{gate}:waiting"
+                        if key not in activity_seen:
+                            activity_seen.add(key)
+                            activity = stage_activity(gate, "waiting")
+                            session["messages"].append(activity)
+                            await websocket.send_text(json.dumps({"type": "activity", "message": activity}, ensure_ascii=False))
+                        if gate == "confirm_problem" and clarification:
+                            session["clarification"] = {**clarification, "status": "draft"}
                     if clarification:
                         assistant_message = ui_message("assistant", final, clarification=clarification)
                     else:
@@ -902,18 +965,36 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
                 run_error = "Something went wrong during the run. Please retry later."
                 break
 
+            if event["type"] == "activity":
+                session = STORE.get(session_id)
+                message = event.get("message")
+                if isinstance(message, dict):
+                    session["messages"].append(message)
+                    STORE.save(session)
+                    await websocket.send_text(json.dumps({"type": "activity", "message": message}, ensure_ascii=False))
+                continue
+
             if event["type"] == "stage":
                 session = STORE.get(session_id)
                 set_stage(session, event["stage"], event.get("status", "running"))
+                status = event.get("status", "running")
+                key = f"{event['stage']}:{status}"
+                activity = None
+                if status in ("running", "waiting", "done") and key not in activity_seen:
+                    activity_seen.add(key)
+                    activity = stage_activity(event["stage"], status)
+                    session["messages"].append(activity)
                 STORE.save(session)
                 await websocket.send_text(json.dumps({
                     "type": "stage",
                     "stage": event["stage"],
-                    "status": event.get("status", "running"),
+                    "status": status,
                     "label": stage_label(event["stage"]),
                     "detail": STAGE_RUNNING_TEXT.get(event["stage"], ""),
                     "stages": session["stages"],
                 }, ensure_ascii=False))
+                if activity is not None:
+                    await websocket.send_text(json.dumps({"type": "activity", "message": activity}, ensure_ascii=False))
     except WebSocketDisconnect:
         future.cancel()
         return
