@@ -43,6 +43,13 @@
     confirmText: document.getElementById('confirm-text'),
     confirmOk: document.getElementById('confirm-ok'),
     confirmCancel: document.getElementById('confirm-cancel'),
+    clarifyOverlay: document.getElementById('clarify-overlay'),
+    clarifyModalClose: document.getElementById('clarify-modal-close'),
+    clarifyModalProblem: document.getElementById('clarify-modal-problem'),
+    clarifyModalSteps: document.getElementById('clarify-modal-steps'),
+    clarifyModalAddStep: document.getElementById('clarify-modal-add-step'),
+    clarifyModalCancel: document.getElementById('clarify-modal-cancel'),
+    clarifyModalSave: document.getElementById('clarify-modal-save'),
   };
 
   const state = {
@@ -59,7 +66,7 @@
     schemaDirty: false,
     panelTab: 'evidence',
     isComposing: false,
-    clarificationEditing: new Set(),
+    activeClarificationMessageId: '',
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -76,6 +83,17 @@
     safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     safe = safe.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     return safe;
+  }
+
+  function scrollToLatestMessage() {
+    window.requestAnimationFrame(() => {
+      const last = el.messages.lastElementChild;
+      if (last) {
+        last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      } else {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      }
+    });
   }
 
   function isTableRow(line) {
@@ -219,7 +237,7 @@
     state.stages = [];
     state.uploads = [];
     state.selectedUploads.clear();
-    state.clarificationEditing.clear();
+    state.activeClarificationMessageId = '';
     state.schema = null;
     state.schemaForm = [];
     connectWs();
@@ -330,20 +348,26 @@
     const waiting = (state.stages || []).find((stage) => stage.status === 'waiting');
     if (!waiting) return '';
     if (waiting.id === 'confirm_problem' && message.clarification) {
-      if (state.clarificationEditing.has(message.id)) {
-        return clarifyFormHtml(message.clarification);
-      }
       return `
         <div class="gate-actions clarification-actions">
-          <button class="gate-confirm" data-action="confirm-clarification-direct" data-message-id="${escapeHtml(message.id)}">Confirm &amp; Continue</button>
-          <button class="gate-edit" data-action="edit-clarification" data-message-id="${escapeHtml(message.id)}">Edit</button>
+          <button class="gate-confirm" data-action="confirm-clarification-direct" data-message-id="${escapeHtml(message.id)}">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M13.78 3.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 8.28a.75.75 0 1 1 1.06-1.06L6 9.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+            <span>Confirm &amp; Continue</span>
+          </button>
+          <button class="gate-edit" data-action="edit-clarification" data-message-id="${escapeHtml(message.id)}">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.54 1.74a2.1 2.1 0 0 1 2.97 2.97l-7.68 7.68a.75.75 0 0 1-.34.2l-3.43.9a.75.75 0 0 1-.92-.92l.9-3.43a.75.75 0 0 1 .2-.34l7.68-7.68Zm1.91 1.06a.6.6 0 0 0-.85 0l-.58.58.85.85.58-.58a.6.6 0 0 0 0-.85Zm-1.64 2.49-.85-.85-6.5 6.5-.36 1.37 1.37-.36 6.34-6.66Z"/></svg>
+            <span>Edit</span>
+          </button>
         </div>
       `;
     }
     const schemaGate = waiting.id === 'confirm_schema';
     return `
       <div class="gate-actions">
-        <button class="gate-confirm" data-action="confirm">Confirm &amp; Continue</button>
+        <button class="gate-confirm" data-action="confirm">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M13.78 3.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 8.28a.75.75 0 1 1 1.06-1.06L6 9.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+          <span>Confirm &amp; Continue</span>
+        </button>
         ${schemaGate ? '<button class="gate-open-schema" data-action="open-schema">Open Schema Studio</button>' : ''}
       </div>
     `;
@@ -375,8 +399,7 @@
   function renderAssistantContent(message) {
     if (message.clarification) {
       const actions = gateActions(message);
-      const editing = state.clarificationEditing.has(message.id);
-      return `${renderClarificationCard(message.clarification, editing ? '' : actions)}${editing ? actions : ''}`;
+      return renderClarificationCard(message.clarification, actions);
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -433,6 +456,56 @@
     const steps = (clarification.steps || []).map((step) => String(step || '').trim()).filter(Boolean);
     if (!problem || !steps.length || state.running || !state.wsReady) return;
     state.ws.send(JSON.stringify({ type: 'confirm_problem', problem, steps }));
+  }
+
+  function renumberClarifyModalSteps() {
+    if (!el.clarifyModalSteps) return;
+    el.clarifyModalSteps.querySelectorAll('.clarify-step-no').forEach((badge, index) => {
+      badge.textContent = index + 1;
+    });
+  }
+
+  function bindClarifyModalRemove(row) {
+    row.querySelector('.clarify-step-remove').addEventListener('click', () => {
+      row.remove();
+      renumberClarifyModalSteps();
+    });
+  }
+
+  function renderClarifyModalSteps(steps) {
+    el.clarifyModalSteps.innerHTML = (steps || []).map(clarifyStepRowHtml).join('');
+    el.clarifyModalSteps.querySelectorAll('.clarify-step').forEach(bindClarifyModalRemove);
+    renumberClarifyModalSteps();
+  }
+
+  function openClarificationModal(messageId) {
+    const message = state.messages.find((item) => item.id === messageId);
+    if (!message || !message.clarification || !el.clarifyOverlay) return;
+    state.activeClarificationMessageId = messageId;
+    el.clarifyModalProblem.value = message.clarification.problem || '';
+    renderClarifyModalSteps(message.clarification.steps || []);
+    el.clarifyOverlay.hidden = false;
+    el.body.classList.add('modal-open');
+    window.requestAnimationFrame(() => el.clarifyModalProblem.focus());
+  }
+
+  function closeClarificationModal() {
+    state.activeClarificationMessageId = '';
+    if (el.clarifyOverlay) el.clarifyOverlay.hidden = true;
+    el.body.classList.remove('modal-open');
+  }
+
+  function saveClarificationModal() {
+    const problem = el.clarifyModalProblem.value.trim();
+    const steps = Array.from(el.clarifyModalSteps.querySelectorAll('.clarify-step-input'))
+      .map((input) => input.value.trim())
+      .filter(Boolean);
+    if (!problem || !steps.length) {
+      alert('The problem statement and at least one step are required.');
+      return;
+    }
+    closeClarificationModal();
+    sendClarification({ problem, steps });
   }
 
   function bindClarifyForm(form) {
@@ -504,17 +577,16 @@
     });
     el.messages.querySelectorAll('[data-action="edit-clarification"]').forEach((button) => {
       button.addEventListener('click', () => {
-        state.clarificationEditing.add(button.getAttribute('data-message-id'));
-        renderMessages();
+        openClarificationModal(button.getAttribute('data-message-id'));
       });
     });
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openPanel('schema'));
     });
-    el.messages.querySelectorAll('.clarify-form').forEach(bindClarifyForm);
     if (window.Prism) window.Prism.highlightAllUnder(el.messages);
     el.messages.scrollTop = el.messages.scrollHeight;
   }
+    scrollToLatestMessage();
 
   // ── Stage strip ─────────────────────────────────────────────────────────
 
@@ -1045,8 +1117,26 @@
     if (el.confirmOverlay) el.confirmOverlay.addEventListener('click', (event) => {
       if (event.target === el.confirmOverlay) closeConfirm(false);
     });
+    if (el.clarifyModalClose) el.clarifyModalClose.addEventListener('click', closeClarificationModal);
+    if (el.clarifyModalCancel) el.clarifyModalCancel.addEventListener('click', closeClarificationModal);
+    if (el.clarifyModalSave) el.clarifyModalSave.addEventListener('click', saveClarificationModal);
+    if (el.clarifyModalAddStep) {
+      el.clarifyModalAddStep.addEventListener('click', () => {
+        el.clarifyModalSteps.insertAdjacentHTML('beforeend', clarifyStepRowHtml(''));
+        const row = el.clarifyModalSteps.lastElementChild;
+        bindClarifyModalRemove(row);
+        renumberClarifyModalSteps();
+        row.querySelector('.clarify-step-input').focus();
+      });
+    }
+    if (el.clarifyOverlay) {
+      el.clarifyOverlay.addEventListener('click', (event) => {
+        if (event.target === el.clarifyOverlay) closeClarificationModal();
+      });
+    }
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && el.confirmOverlay && !el.confirmOverlay.hidden) closeConfirm(false);
+      if (event.key === 'Escape' && el.clarifyOverlay && !el.clarifyOverlay.hidden) closeClarificationModal();
     });
 
     el.fabMain.addEventListener('click', toggleFab);
