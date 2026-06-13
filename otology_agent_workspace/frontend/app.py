@@ -683,6 +683,28 @@ def ui_message(role: str, content: str = "", **extra: Any) -> dict[str, Any]:
     return message
 
 
+def compact_model_output(text: str, max_chars: int = 1600) -> str:
+    cleaned = sanitize_user_visible_output(text or "").strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars].rstrip() + "\n…"
+
+
+def model_activity(stage_id: str, output: str) -> dict[str, Any]:
+    title = stage_label(stage_id)
+    cleaned = compact_model_output(output)
+    return ui_message(
+        "event",
+        "Model returned a structured update.",
+        kind="stage",
+        title=title,
+        stage=stage_id,
+        status="running",
+        thinking="Reviewing the latest structured model result for this step.",
+        output=cleaned,
+    )
+
+
 def stage_activity(stage_id: str, status: str = "running") -> dict[str, Any]:
     title = stage_label(stage_id)
     content = STAGE_ACTIVITY_TEXT.get(stage_id, STAGE_RUNNING_TEXT.get(stage_id, title))
@@ -910,6 +932,7 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
             content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
         if content:
             final_content = content
+            emit({"type": "activity", "message": model_activity("clarify", content)})
     return final_content
 
 
@@ -930,6 +953,7 @@ def run_subagent_json(
     run_dir: Path,
     emit,
     max_tool_calls: int = 18,
+    stage_id: str = "",
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
 
@@ -940,6 +964,7 @@ def run_subagent_json(
     os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
 
     final_content = ""
+    emitted_model_output = ""
     emitted_tools: set[str] = set()
     tool_call_count = 0
     config = {"configurable": {"thread_id": f"{thread_id}:{agent_id}"}}
@@ -976,6 +1001,9 @@ def run_subagent_json(
                 content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
             if content and not (getattr(last, "tool_calls", None) or []):
                 final_content = content
+                if stage_id and content != emitted_model_output:
+                    emitted_model_output = content
+                    emit({"type": "activity", "message": model_activity(stage_id, content)})
     parsed = extract_json_payload(final_content)
     parsed["_raw"] = final_content
     return parsed
@@ -1134,6 +1162,7 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
         session["thread_id"],
         run_dir,
         emit,
+        stage_id="evidence",
     )
     manifest_path = write_evidence_manifest(run_dir, question, evidence_payload, upload_paths)
     evidence = read_json(manifest_path)
@@ -1149,6 +1178,7 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
         session["thread_id"],
         run_dir,
         emit,
+        stage_id="schema_build",
     )
     draft_path = run_dir / "concepts" / "draft_schema.py"
     if not draft_path.exists():
@@ -1166,6 +1196,7 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
         session["thread_id"],
         run_dir,
         emit,
+        stage_id="schema_judge",
     )
     judgment = judger_payload if "answerable" in judger_payload else judge_schema(question, schema_path=draft_path)
     if not judgment.get("answerable", False):
@@ -1207,6 +1238,7 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         session["thread_id"],
         run_dir,
         emit,
+        stage_id="extract",
     )
     if not (run_dir / "intermediate" / "extraction_report.json").exists():
         extract_company_csv(confirmed_path, choose_csv_source(run_dir, upload_paths), run_dir)
@@ -1225,6 +1257,7 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         session["thread_id"],
         run_dir,
         emit,
+        stage_id="solve",
     )
     solver_path = run_dir / "intermediate" / "solver_result.json"
     solver = read_json(solver_path) if solver_path.exists() else {}

@@ -351,7 +351,7 @@
       if (payload.stages) state.stages = payload.stages;
       renderStageStrip();
       renderProgressTab();
-      renderMessages();
+      renderMessages({ preserveScroll: true });
       if (payload.status === 'running' && payload.detail) {
         el.runDetail.textContent = payload.detail;
       }
@@ -359,7 +359,7 @@
     }
     if (payload.type === 'activity') {
       state.messages.push(payload.message);
-      renderMessages();
+      renderMessages({ preserveScroll: true });
       return;
     }
     if (payload.type === 'assistant_final') {
@@ -692,6 +692,7 @@
       title: (stage && stage.label) || title || 'Processing step',
       status: (stage && stage.status) || 'running',
       thinking: '',
+      output: '',
       tools: [],
     };
   }
@@ -710,7 +711,8 @@
         const card = cards.get(activeStageId);
         card.title = message.title || card.title;
         card.status = (stageById(activeStageId) || {}).status || message.status || card.status;
-        card.thinking = normalizeActivityText(message.content || card.thinking);
+        if (message.thinking) card.thinking = normalizeActivityText(message.thinking);
+        if (message.output) card.output = normalizeActivityText(message.output);
         return;
       }
       if (message.kind === 'tool') {
@@ -720,6 +722,8 @@
         const card = cards.get(stageId);
         const content = normalizeActivityText(message.content || 'Running an internal tool.');
         if (content && !card.tools.includes(content)) card.tools.push(content);
+        if (message.thinking) card.thinking = normalizeActivityText(message.thinking);
+        if (message.output) card.output = normalizeActivityText(message.output);
       }
     });
     return (state.stages || [])
@@ -751,14 +755,8 @@
     const isPending = card.status === 'pending';
     const expanded = (!isDone && !isPending) || state.expandedStageCards.has(card.id);
     const toolCount = Math.max(card.tools.length, card.status === 'pending' ? 0 : 1);
-    const thinking = card.thinking || (
-      card.status === 'pending'
-        ? 'This task has not started yet.'
-        : `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`
-    );
-    const output = card.status === 'waiting'
-      ? (card.thinking || 'Waiting for your confirmation.')
-      : (card.thinking || '');
+    const thinking = card.thinking || '';
+    const output = card.output || '';
     const detailHtml = `
       <div class="run-tool-pane">
         <span class="run-section-label">Tool activity</span>
@@ -766,7 +764,7 @@
       </div>
       <div class="run-reasoning-pane">
         <span class="run-section-label">Model thinking</span>
-        <div class="run-reasoning-output">${escapeHtml(sanitizeDisplayText(thinking))}</div>
+        <div class="run-reasoning-output">${thinking ? escapeHtml(sanitizeDisplayText(thinking)) : '<span class="live-placeholder">Waiting for live model update…</span>'}</div>
       </div>
       <div class="run-model-pane">
         <span class="run-section-label">Model output</span>
