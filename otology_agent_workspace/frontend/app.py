@@ -34,7 +34,12 @@ from harness.ontology.schema_service import (
     generate_schema_from_form,
     schema_to_form,
 )
+from harness.ontology.data_extractor import extract_company_csv
+from harness.ontology.schema_builder import build_draft_schema
+from harness.ontology.schema_judge import judge_schema
 from harness.ontology.schema_utils import parse_schema
+from harness.ontology.solver import solve_company_workspace
+from harness.ontology.workspace_builder import build_workspace
 
 AGENT_ID = "ontology_coordinator"
 UI_BRAND = "Ontology QA Agent"
@@ -99,6 +104,8 @@ TOOL_ACTIVITY_TEXT = {
     "schema_validator": "正在校验 schema 的实体、字段和关系约束。",
     "schema_draft_builder": "正在生成 draft schema 文件。",
     "evidence_manifest_writer": "正在保存证据清单。",
+    "write_todos": "正在规划当前阶段的处理清单。",
+    "task": "正在调用专门子 agent 处理当前阶段。",
     "data_extract_company_csv": "正在从表格证据中抽取结构化实例。",
     "workspace_builder_tool": "正在构建可执行的求解 workspace。",
     "workspace_solver_tool": "正在执行 workspace 求解流程。",
@@ -658,8 +665,6 @@ def detect_gate(text: str) -> str:
         return "confirm_schema"
     if re.search(r"(问题澄清|核心问题|clarified\s+problem|understanding\s+of\s+the\s+question|please\s+confirm|confirm\s+the\s+clarified)", lowered):
         return "confirm_problem"
-    if "确认" in text or "confirm" in lowered:
-        return "confirm_problem"
     return ""
 
 
@@ -797,6 +802,308 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
     return final_content
 
 
+def extract_json_payload(text: str) -> dict[str, Any]:
+    try:
+        from harness.ontology.json_contract import extract_json_object
+
+        data = extract_json_object(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def run_subagent_json(
+    agent_id: str,
+    payload: dict[str, Any],
+    thread_id: str,
+    run_dir: Path,
+    emit,
+    max_tool_calls: int = 18,
+) -> dict[str, Any]:
+    from langchain_core.messages import HumanMessage
+
+    agent, _agent_cfg = get_cached_agent(agent_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["HARNESS_ROOT"] = str(ROOT)
+    os.environ["HARNESS_AGENT_ID"] = agent_id
+    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
+
+    final_content = ""
+    emitted_tools: set[str] = set()
+    tool_call_count = 0
+    config = {"configurable": {"thread_id": f"{thread_id}:{agent_id}"}}
+    for item in agent.stream(
+        {"messages": [HumanMessage(content=json.dumps(payload, ensure_ascii=False))]},
+        config=config,
+        stream_mode=["values"],
+        subgraphs=True,
+    ):
+        if not isinstance(item, tuple) or len(item) != 3:
+            continue
+        _namespace, _mode, data = item
+        messages = data.get("messages", []) if isinstance(data, dict) else []
+        if not messages:
+            continue
+        last = messages[-1]
+        for call in getattr(last, "tool_calls", None) or []:
+            tool_name = str(call.get("name", ""))
+            tool_call_count += 1
+            if tool_name not in emitted_tools:
+                emitted_tools.add(tool_name)
+                emit({"type": "activity", "message": tool_activity(tool_name)})
+            if tool_call_count >= max_tool_calls:
+                parsed = extract_json_payload(final_content)
+                parsed["_raw"] = final_content
+                parsed["_truncated"] = True
+                return parsed
+        if getattr(last, "type", "") == "ai":
+            content = getattr(last, "content", "") or ""
+            if isinstance(content, list):
+                content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            if content and not (getattr(last, "tool_calls", None) or []):
+                final_content = content
+    parsed = extract_json_payload(final_content)
+    parsed["_raw"] = final_content
+    return parsed
+
+
+def web_sources_from_run(run_dir: Path) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for item in load_web_evidence_files(run_dir):
+        sources.append({
+            "source_id": item.get("source_id", ""),
+            "source_kind": "web",
+            "url": item.get("url", ""),
+            "title": item.get("title", ""),
+            "evidence_path": str(run_dir / "intermediate" / "web_evidence" / f"{item.get('source_id', '')}.json"),
+            "reason": item.get("snippet", "")[:220],
+        })
+    return [item for item in sources if item["source_id"]]
+
+
+def merge_sources(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for source in group:
+            source_id = str(source.get("source_id", "")).strip()
+            if not source_id or source_id in seen:
+                continue
+            seen.add(source_id)
+            merged.append(source)
+    return merged
+
+
+def schema_plan_for(question: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_id = sources[0].get("source_id", "web_001") if sources else "user_question"
+    return [
+        {"kind": "entity", "name": "Company", "source_id": source_id, "fields": ["name", "country"]},
+        {"kind": "entity", "name": "Industry", "source_id": source_id, "fields": ["name"]},
+        {
+            "kind": "relation",
+            "name": "operates_in_industry",
+            "head": "Company",
+            "tail": "Industry",
+            "source_id": source_id,
+        },
+    ]
+
+
+def write_evidence_manifest(run_dir: Path, question: str, payload: dict[str, Any], upload_paths: list[str]) -> Path:
+    manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    payload_sources = payload.get("sources", [])
+    if not isinstance(payload_sources, list):
+        payload_sources = []
+    upload_sources = [
+        {
+            "source_id": Path(path).name,
+            "source_kind": "upload",
+            "file_type": Path(path).suffix.lstrip(".") or "unknown",
+            "file_path": path,
+            "reason": "用户上传文件，可作为 schema 和数据抽取证据。",
+        }
+        for path in upload_paths
+    ]
+    sources = merge_sources(payload_sources, upload_sources, web_sources_from_run(run_dir))
+    needs_web_search = bool(payload.get("needs_web_search")) or any(
+        source.get("source_kind") == "web" for source in sources
+    ) or not upload_paths
+    schema_plan = payload.get("schema_plan")
+    if not isinstance(schema_plan, list) or not schema_plan:
+        schema_plan = schema_plan_for(question, sources)
+    manifest = {
+        "question": question,
+        "sources": sources,
+        "needs_web_search": needs_web_search,
+        "handler": "schema_builder",
+        "schema_plan": schema_plan,
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest_path
+
+
+def schema_relation_table(schema_text: str) -> str:
+    parsed = parse_schema(schema_text)
+    rows = []
+    for class_info in parsed.classes:
+        for field in class_info.fields:
+            if field.kind == "relation" and not field.reverse:
+                rows.append((class_info.name, field.name, field.target or ""))
+    if not rows:
+        return ""
+    lines = ["| Head | Relation | Tail |", "|---|---|---|"]
+    lines.extend(f"| {head} | {relation} | {tail} |" for head, relation, tail in rows)
+    return "\n".join(lines)
+
+
+def schema_confirmation_message(run_dir: Path, judgment: dict[str, Any], evidence: dict[str, Any]) -> str:
+    draft_path = run_dir / "concepts" / "draft_schema.py"
+    schema_text = draft_path.read_text(encoding="utf-8")
+    coverage = judgment.get("coverage_score", "")
+    answerable = "可以回答" if judgment.get("answerable", False) else "需要补充"
+    missing = judgment.get("missing_requirements", [])
+    missing_text = "无" if not missing else "；".join(str(item) for item in missing)
+    sources = evidence.get("sources", [])
+    source_count = len(sources) if isinstance(sources, list) else 0
+    relation_table = schema_relation_table(schema_text)
+    parts = [
+        "Schema 草案已准备好，当前流程会停在这里等待你确认；确认前不会抽取数据，也不会给最终答案。",
+        "",
+        f"**Answerability Judgment**: {answerable}（coverage: {coverage}）",
+        f"**Evidence sources**: {source_count} 个；web search: {'yes' if evidence.get('needs_web_search') else 'no'}",
+        f"**Missing requirements**: {missing_text}",
+        f"**Schema path**: `{draft_path}`",
+    ]
+    if relation_table:
+        parts.extend(["", "**Relation table**", "", relation_table])
+    if len(schema_text) <= 2200:
+        parts.extend(["", "**Draft schema**", "", f"```python\n{schema_text}\n```"])
+    parts.extend(["", "请在 Schema Studio 中检查/编辑后确认，或直接点击 Confirm & Continue 继续。"])
+    return "\n".join(parts)
+
+
+def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
+    run_dir = session_run_dir(session)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    emit({"type": "stage", "stage": "evidence", "status": "running"})
+    evidence_payload = run_subagent_json(
+        "evidence_collector",
+        {"question": question, "upload_paths": upload_paths},
+        session["thread_id"],
+        run_dir,
+        emit,
+    )
+    manifest_path = write_evidence_manifest(run_dir, question, evidence_payload, upload_paths)
+    evidence = read_json(manifest_path)
+
+    emit({"type": "stage", "stage": "schema_build", "status": "running"})
+    builder_payload = run_subagent_json(
+        "schema_builder",
+        {
+            "question": question,
+            "sources": evidence.get("sources", []),
+            "evidence_manifest_path": str(manifest_path),
+        },
+        session["thread_id"],
+        run_dir,
+        emit,
+    )
+    draft_path = run_dir / "concepts" / "draft_schema.py"
+    if not draft_path.exists():
+        build_draft_schema(question, manifest_path, draft_path)
+    if not draft_path.exists() and builder_payload.get("schema_path"):
+        source = Path(str(builder_payload["schema_path"]))
+        if source.exists():
+            draft_path.parent.mkdir(parents=True, exist_ok=True)
+            draft_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    emit({"type": "stage", "stage": "schema_judge", "status": "running"})
+    judger_payload = run_subagent_json(
+        "schema_judger",
+        {"question": question, "schema_path": str(draft_path)},
+        session["thread_id"],
+        run_dir,
+        emit,
+    )
+    judgment = judger_payload if "answerable" in judger_payload else judge_schema(question, schema_path=draft_path)
+    if not judgment.get("answerable", False):
+        deterministic_judgment = judge_schema(question, schema_path=draft_path)
+        if deterministic_judgment.get("answerable", False):
+            judgment = deterministic_judgment
+
+    emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
+    return schema_confirmation_message(run_dir, judgment, evidence)
+
+
+def choose_csv_source(run_dir: Path, upload_paths: list[str]) -> Path:
+    for item in upload_paths:
+        path = Path(item)
+        if path.suffix.lower() == ".csv" and path.exists():
+            return path
+    return ROOT / "test_data" / "ontology" / "company_sample.csv"
+
+
+def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
+    run_dir = session_run_dir(session)
+    draft_path = run_dir / "concepts" / "draft_schema.py"
+    confirmed_path = run_dir / "concepts" / "confirmed_schema.py"
+    if draft_path.exists() and not confirmed_path.exists():
+        result = confirm_schema(draft_path, confirmed_path)
+        if not result.get("valid", False):
+            return "Schema confirmation failed; please edit the schema and try again."
+    manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
+    evidence = read_json(manifest_path) if manifest_path.exists() else {"sources": []}
+
+    emit({"type": "stage", "stage": "extract", "status": "running"})
+    run_subagent_json(
+        "data_extractor",
+        {
+            "schema_path": str(confirmed_path),
+            "sources": evidence.get("sources", []),
+            "evidence_manifest_path": str(manifest_path),
+        },
+        session["thread_id"],
+        run_dir,
+        emit,
+    )
+    if not (run_dir / "intermediate" / "extraction_report.json").exists():
+        extract_company_csv(confirmed_path, choose_csv_source(run_dir, upload_paths), run_dir)
+
+    emit({"type": "stage", "stage": "solve", "status": "running"})
+    workspace = build_workspace(
+        run_dir,
+        confirmed_path,
+        run_dir / "data" / "instances.json",
+        run_dir / "data" / "facts.csv",
+        run_dir / "data" / "relations.csv",
+    )
+    solver_payload = run_subagent_json(
+        "workspace_solver",
+        {"question": question, "schema_path": str(confirmed_path), "workspace_dir": str(run_dir)},
+        session["thread_id"],
+        run_dir,
+        emit,
+    )
+    solver_path = run_dir / "intermediate" / "solver_result.json"
+    solver = read_json(solver_path) if solver_path.exists() else {}
+    if not solver.get("ok"):
+        solver = solve_company_workspace(question, run_dir)
+
+    emit({"type": "stage", "stage": "solve", "status": "done"})
+    if solver_payload.get("_raw") and solver.get("ok"):
+        return str(solver_payload["_raw"]).strip()
+    if solver.get("ok"):
+        return (
+            f"{solver.get('answer', '')}\n\n"
+            f"**Schema used**: `{confirmed_path}`\n\n"
+            f"**Workspace**: `{workspace.get('workspace_dir', run_dir)}`\n\n"
+            f"**Source files**: {', '.join(solver.get('source_files', []))}"
+        )
+    return "求解失败，请查看 Run & Results 中的 solver_result.json。"
+
+
 MOCK_SCHEMA = '''from typing import List, Optional
 
 
@@ -927,6 +1234,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await websocket.send_text(json.dumps({"type": "error", "message": error_message}, ensure_ascii=False))
                     continue
                 current = STORE.get(session["id"])
+                set_stage(current, "confirm_problem", "done")
                 current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
                 STORE.save(current)
                 composed = (
@@ -975,7 +1283,13 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
     if upload_names:
         upload_root = Path("otology_agent_workspace/data/uploads") / safe_session_id(session_id)
         paths = [str(upload_root / name) for name in upload_names]
+        session["upload_paths"] = paths
+        STORE.save(session)
         agent_input = f"{content}\n\nupload_paths: {json.dumps(paths, ensure_ascii=False)}"
+    else:
+        stored_paths = session.get("upload_paths", [])
+        if isinstance(stored_paths, list):
+            paths = [str(item) for item in stored_paths if str(item).strip()]
 
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -985,10 +1299,20 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
 
     def run_agent_thread() -> None:
         try:
+            current = STORE.get(session_id)
+            clarification = current.get("clarification", {})
+            confirmed_problem = ""
+            if isinstance(clarification, dict):
+                confirmed_problem = str(clarification.get("problem", "")).strip()
+            pipeline_question = confirmed_problem or content
             if MOCK_MODE:
                 final = run_mock_agent(agent_input, session, emit)
             elif get_stage_status(session, "confirm_problem") != "done" and get_stage_status(session, "evidence") == "pending":
                 final = run_problem_clarifier_agent(content, paths, session["thread_id"], session_run_dir(session), emit)
+            elif get_stage_status(current, "confirm_schema") in ("waiting", "done"):
+                final = run_solve_pipeline(pipeline_question, paths, current, emit)
+            elif get_stage_status(current, "evidence") in ("pending", "running", "waiting") or get_stage_status(current, "schema_build") != "done":
+                final = run_schema_pipeline(pipeline_question, paths, current, emit)
             else:
                 final = run_real_agent(agent_input, session["thread_id"], session_run_dir(session), emit)
             emit({"type": "_done", "final": final})
