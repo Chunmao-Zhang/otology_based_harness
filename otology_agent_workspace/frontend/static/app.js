@@ -667,6 +667,9 @@
   function buildStageCards(events) {
     const cards = new Map();
     let activeStageId = inferActiveStageId();
+    (state.stages || []).forEach((stage) => {
+      cards.set(stage.id, makeStageCard(stage.id, stage.label));
+    });
     (events || []).forEach((message) => {
       if (!message || message.kind === 'run_start') return;
       if (message.kind === 'stage' && message.stage) {
@@ -687,13 +690,7 @@
         if (content && !card.tools.includes(content)) card.tools.push(content);
       }
     });
-    if (!cards.size) {
-      (state.stages || []).filter((stage) => stage.status !== 'pending').forEach((stage) => {
-        cards.set(stage.id, makeStageCard(stage.id, stage.label));
-      });
-    }
     return (state.stages || [])
-      .filter((stage) => cards.has(stage.id))
       .map((stage) => {
         const card = cards.get(stage.id);
         card.status = stage.status || card.status;
@@ -702,65 +699,57 @@
       });
   }
 
-  function renderStageCard(card) {
-    const isDone = card.status === 'done';
-    const expanded = !isDone || state.expandedStageCards.has(card.id);
-    const statusLabel = isDone && !expanded ? '' : stageStatusText(card.status);
-    const toolsHtml = card.tools.length
-      ? `
-        <div class="stage-card-section">
-          <span>Tool activity</span>
-          <ul>${card.tools.map((tool) => `<li>${formatInline(tool)}</li>`).join('')}</ul>
+  function renderTaskToolActivity(card) {
+    const items = card.tools.length ? card.tools : [card.thinking || `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`];
+    return items.map((item, index) => `
+      <div class="task-tool-card ${escapeHtml(card.status)}">
+        <div class="task-tool-topline">
+          <span class="task-tool-status">${escapeHtml(card.status === 'done' ? 'Done' : card.status === 'waiting' ? 'Waiting' : 'Processing')}</span>
+          <span class="task-tool-step">Step ${index + 1}</span>
         </div>
-      `
-      : '';
-    const thinkingHtml = card.thinking && expanded
-      ? `
-        <div class="stage-card-section">
-          <span>Current model progress</span>
-          <p>${formatInline(card.thinking)}</p>
-        </div>
-      `
-      : '';
-    return `
-      <section class="stage-card ${escapeHtml(card.status)} ${expanded ? 'expanded' : 'collapsed'}">
-        <button class="stage-card-head" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
-          <span class="stage-card-icon">${stageCardIcon(card.status)}</span>
-          <strong>${escapeHtml(card.title)}</strong>
-          ${statusLabel ? `<small>${statusLabel}</small>` : ''}
-        </button>
-        ${expanded ? `<div class="stage-card-body">${thinkingHtml}${toolsHtml || '<div class="stage-card-section muted">No tool activity to show for this step yet.</div>'}</div>` : ''}
-      </section>
-    `;
+        <strong>${escapeHtml(card.title)}</strong>
+        <p>${formatInline(item)}</p>
+      </div>
+    `).join('');
   }
 
-  function renderStagePipeline(cards) {
-    if (!cards.length) return '';
-    const active = cards.find((card) => ['running', 'waiting'].includes(card.status)) || cards[cards.length - 1];
-    const finished = cards.every((card) => card.status === 'done');
-    const toolCount = cards.reduce((total, card) => total + Math.max(card.tools.length, 1), 0);
-    const thinking = active && active.thinking
-      ? active.thinking
-      : (active ? `${active.title} is ${stageStatusText(active.status).toLowerCase()}.` : 'Waiting for the next model update.');
-    const modelOutput = active && active.status === 'waiting'
+  function renderTaskNode(card) {
+    const isDone = card.status === 'done';
+    const isPending = card.status === 'pending';
+    const expanded = (!isDone && !isPending) || state.expandedStageCards.has(card.id);
+    const toolCount = Math.max(card.tools.length, card.status === 'pending' ? 0 : 1);
+    const thinking = card.thinking || (
+      card.status === 'pending'
+        ? 'This task has not started yet.'
+        : `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`
+    );
+    const output = card.status === 'waiting'
       ? 'A confirmation step is ready below.'
-      : (finished ? 'This processing group is complete.' : 'Model output will update as this step completes.');
+      : (card.status === 'done' ? 'This task is complete.' : 'Model output will update as this task completes.');
+    if (!expanded) {
+      return `
+        <section class="task-node ${escapeHtml(card.status)} folded">
+          <button class="task-node-head" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="false">
+            <span class="task-node-icon">${stageCardIcon(card.status)}</span>
+            <strong>${escapeHtml(card.title)}</strong>
+            <small>${escapeHtml(stageStatusText(card.status))}</small>
+          </button>
+        </section>
+      `;
+    }
     return `
-      <article class="message event stage-pipeline-message run-progress">
-        <div class="avatar activity-avatar">O</div>
-        <div class="run-card ontology-run-card ${finished ? 'complete' : 'working'}">
+      <section class="task-node ${escapeHtml(card.status)} expanded">
+        <div class="run-card ontology-task-card ${card.status === 'done' ? 'complete' : 'working'}">
           <div class="run-card-head">
-            <div class="run-title">
-              <span class="${finished ? 'run-check' : 'run-pulse'}">${finished ? '✓' : ''}</span>
-              <span>${finished ? 'Processing complete' : 'Agent is working'}</span>
-            </div>
+            <button class="task-node-title" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="true">
+              <span class="${card.status === 'done' ? 'run-check' : 'run-pulse'}">${card.status === 'done' ? '✓' : ''}</span>
+              <span>${card.status === 'done' ? 'Task complete' : card.status === 'waiting' ? 'Waiting for confirmation' : 'Agent is working'}</span>
+            </button>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
           <div class="run-tool-pane">
             <span class="run-section-label">Tool activity</span>
-            <div class="stage-card-list">
-              ${cards.map(renderStageCard).join('')}
-            </div>
+            ${renderTaskToolActivity(card)}
           </div>
           <div class="run-reasoning-pane">
             <span class="run-section-label">Model thinking</span>
@@ -768,8 +757,20 @@
           </div>
           <div class="run-model-pane">
             <span class="run-section-label">Model output</span>
-            <div class="run-model-output">${formatMarkdown(modelOutput)}</div>
+            <div class="run-model-output">${formatMarkdown(output)}</div>
           </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderStagePipeline(cards) {
+    if (!cards.length) return '';
+    return `
+      <article class="message event stage-pipeline-message">
+        <div class="avatar activity-avatar">O</div>
+        <div class="task-node-list">
+          ${cards.map(renderTaskNode).join('')}
         </div>
       </article>
     `;
