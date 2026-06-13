@@ -71,8 +71,12 @@
     isComposing: false,
     activeClarificationMessageId: '',
     expandedStageCards: new Set(),
+    expandedGroups: new Set(),
+    revealedGroups: new Set(),
     forceScroll: false,
     liveStream: {},
+    toolKeys: {},
+    runStartedAt: 0,
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -346,6 +350,7 @@
     }
     if (payload.type === 'run_start') {
       state.liveStream = {};
+      state.forceScroll = true;
       setRunning(true, 'The agent is working on your request…');
       return;
     }
@@ -354,7 +359,13 @@
       if (payload.status === 'done' && payload.stage) delete state.liveStream[payload.stage];
       renderStageStrip();
       renderProgressTab();
-      renderMessages({ preserveScroll: true });
+      if (payload.status === 'running') {
+        // A new business step started: bring the user to the live work.
+        state.forceScroll = true;
+        renderMessages();
+      } else {
+        renderMessages({ preserveScroll: true });
+      }
       if (payload.status === 'running' && payload.detail) {
         el.runDetail.textContent = payload.detail;
       }
@@ -378,6 +389,8 @@
     if (payload.type === 'assistant_final') {
       state.messages.push(payload.message);
       if (payload.stages) state.stages = payload.stages;
+      // Surface the deliverable (a confirmation gate or the final answer).
+      state.forceScroll = true;
       renderMessages();
       renderStageStrip();
       refreshSidebarData();
@@ -397,7 +410,34 @@
     }
   }
 
+  // Anchor the live timer to when the current working segment started, then let
+  // it climb continuously until the segment ends (a confirmation gate or the
+  // final answer). The backend diagnosis showed ~97% of run time is model
+  // inference; a continuously counting timer makes long steps read as "still
+  // working" rather than "frozen".
+  function formatElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const ss = String(s % 60).padStart(2, '0');
+    return `${m}m ${ss}s`;
+  }
+
+  // Update every live timer in place (text only) so the per-second tick never
+  // triggers a full re-render — that would reset animations and the scroll
+  // position the user is reading.
+  function tickElapsed() {
+    const now = Date.now();
+    document.querySelectorAll('.work-elapsed[data-since]').forEach((node) => {
+      const since = Number(node.getAttribute('data-since')) || now;
+      node.textContent = formatElapsed(now - since);
+    });
+  }
+
   function setRunning(running, detail) {
+    // Start the clock once, on the transition into a running segment, so it
+    // counts continuously from start to end instead of resetting on each event.
+    if (running && !state.running) state.runStartedAt = Date.now();
     state.running = running;
     el.runIndicator.classList.toggle('active', running);
     el.runDetail.textContent = running ? (detail || '') : '';
@@ -574,18 +614,44 @@
       || content.includes('**Entity Definitions**');
   }
 
+  function schemaReviewState() {
+    const confirmStage = (state.stages || []).find((stage) => stage.id === 'confirm_schema');
+    const waiting = !!(confirmStage && confirmStage.status === 'waiting');
+    const confirmed = !!(state.schema && state.schema.status === 'confirmed');
+    if (waiting) {
+      return {
+        statusClass: 'waiting', statusLabel: 'Waiting',
+        heading: 'Review schema before continuing',
+        copy: 'Confirm the entity definitions and relation schema below, or open Schema Studio to edit them.',
+      };
+    }
+    if (confirmed) {
+      return {
+        statusClass: 'confirmed', statusLabel: 'Confirmed',
+        heading: 'Confirmed ontology schema',
+        copy: 'This schema was confirmed and used for data extraction and solving.',
+      };
+    }
+    return {
+      statusClass: 'draft', statusLabel: 'Draft',
+      heading: 'Ontology schema draft',
+      copy: 'Draft schema generated from the evidence.',
+    };
+  }
+
   function schemaPreviewTablesHtml() {
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
+    const view = schemaReviewState();
     if (!entities.length && !relations.length) {
       return `
         <section class="schema-review-card">
           <div class="schema-review-head">
             <div>
               <span class="run-section-label">Schema confirmation</span>
-              <h3>Review schema before continuing</h3>
+              <h3>${escapeHtml(view.heading)}</h3>
             </div>
-            <span class="schema-review-status">Waiting</span>
+            <span class="schema-review-status ${view.statusClass}">${escapeHtml(view.statusLabel)}</span>
           </div>
           <div class="onto-empty">Schema preview is loading.</div>
         </section>
@@ -619,11 +685,11 @@
         <div class="schema-review-head">
           <div>
             <span class="run-section-label">Schema confirmation</span>
-            <h3>Review schema before continuing</h3>
+            <h3>${escapeHtml(view.heading)}</h3>
           </div>
-          <span class="schema-review-status">Waiting</span>
+          <span class="schema-review-status ${view.statusClass}">${escapeHtml(view.statusLabel)}</span>
         </div>
-        <p class="schema-review-copy">Confirm the entity definitions and relation schema below, or open Schema Studio to edit them.</p>
+        <p class="schema-review-copy">${escapeHtml(view.copy)}</p>
         <div class="schema-download-row">
           <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
           <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
@@ -664,10 +730,19 @@
   function renderAssistantContent(message) {
     if (message.clarification) {
       const actions = gateActions(message);
-      return `${analysisCompleteHtml('Problem clarification is ready for confirmation.')}${renderClarificationCard(message.clarification, actions)}`;
+      const detail = actions
+        ? 'Problem clarification is ready for confirmation.'
+        : 'Problem clarification confirmed.';
+      return `${analysisCompleteHtml(detail)}${renderClarificationCard(message.clarification, actions)}`;
     }
     if (isSchemaReviewMessage(message)) {
-      return `${analysisCompleteHtml('Schema analysis is complete. Review the schema below before extraction starts.')}${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
+      const view = schemaReviewState();
+      const detail = view.statusClass === 'waiting'
+        ? 'Schema analysis is complete. Review the schema below before extraction starts.'
+        : (view.statusClass === 'confirmed'
+          ? 'Schema confirmed. It was used for data extraction and solving.'
+          : 'Schema analysis is complete.');
+      return `${analysisCompleteHtml(detail)}${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
     }
     return `${formatMarkdown(message.content)}${gateActions(message)}`;
   }
@@ -707,7 +782,7 @@
       status: (stage && stage.status) || 'running',
       thinking: '',
       output: '',
-      tools: [],
+      toolSteps: [],
     };
   }
 
@@ -738,18 +813,24 @@
         if (!stageId) return;
         if (!cards.has(stageId)) cards.set(stageId, makeStageCard(stageId, stageById(stageId)?.label));
         const card = cards.get(stageId);
-        const content = normalizeActivityText(message.content || 'Running an internal tool.');
-        if (content && !card.tools.includes(content)) card.tools.push(content);
-        if (message.thinking) card.thinking = normalizeActivityText(message.thinking);
-        if (message.output) card.output = normalizeActivityText(message.output);
+        const label = normalizeActivityText(message.content || 'Running an internal tool.');
+        const stepStatus = message.status === 'done' ? 'done' : 'running';
+        const stepOutput = message.tool_output ? normalizeActivityText(message.tool_output) : '';
+        const cid = message.tool_call_id || `${stageId}:${label}`;
+        let step = card.toolSteps.find((item) => item.id === cid);
+        if (!step) {
+          step = { id: cid, label, status: stepStatus, output: stepOutput };
+          card.toolSteps.push(step);
+        } else {
+          if (label) step.label = label;
+          if (stepStatus === 'done') step.status = 'done';
+          if (stepOutput) step.output = stepOutput;
+        }
       }
     });
-    // Make sure stages that only have a live token stream still get a card.
-    Object.keys(state.liveStream || {}).forEach((stageId) => {
-      if (!cards.has(stageId) && (stageById(stageId) || {}).status !== 'pending') {
-        cards.set(stageId, makeStageCard(stageId, (stageById(stageId) || {}).label));
-      }
-    });
+    // Cards come only from this group's own event buffer; we never inject the
+    // global live-stream stages here (doing so leaked a later run's stages into
+    // earlier run groups). liveStream is used purely to enrich existing cards.
     return (state.stages || [])
       .filter((stage) => stage.status !== 'pending' && cards.has(stage.id))
       .map((stage) => {
@@ -767,46 +848,109 @@
       });
   }
 
-  function renderTaskToolActivity(card) {
-    const running = card.status !== 'done' && card.status !== 'waiting';
-    const dots = '<span class="tool-dots"><span></span><span></span><span></span></span>';
-    if (!card.tools.length) {
-      const fallback = card.thinking
-        ? 'Planning the next action…'
-        : `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`;
-      return `
-        <ol class="tool-steps">
-          <li class="tool-step ${running ? 'active' : 'done'}">
-            <span class="tool-step-index">${running ? '' : '✓'}</span>
-            <span class="tool-step-text">${formatInline(fallback)}</span>
-            ${running ? dots : ''}
-          </li>
-        </ol>`;
+  // Fixed single tool-activity bar that mirrors the reference KC-Agent UI:
+  // it always shows the latest tool call and floats up only when the tool
+  // actually changes, instead of growing an ever-longer list.
+  function renderTaskToolActivity(card, status) {
+    const running = status === 'running';
+    const steps = card.toolSteps || [];
+    const stepCount = steps.length;
+    const latestStep = stepCount ? steps[stepCount - 1] : null;
+    const latest = latestStep ? latestStep.label : '';
+    const latestDone = latestStep ? latestStep.status === 'done' : false;
+
+    let swapped = false;
+    if (running && latestStep) {
+      if (!state.toolKeys) state.toolKeys = {};
+      const key = `${card.id}:${latestStep.id}:${latestStep.status}`;
+      swapped = state.toolKeys[card.id] !== key;
+      state.toolKeys[card.id] = key;
     }
-    const lastIndex = card.tools.length - 1;
-    const rows = card.tools.map((item, i) => {
-      const active = i === lastIndex && running;
-      return `
-        <li class="tool-step ${active ? 'active' : 'done'}">
-          <span class="tool-step-index">${active ? '' : '✓'}</span>
-          <span class="tool-step-text">${formatInline(item)}</span>
-          ${active ? dots : ''}
-        </li>`;
-    }).join('');
-    return `<ol class="tool-steps">${rows}</ol>`;
+
+    let statusClass = 'calling';
+    let label = 'Working';
+    let showDots = false;
+    if (status === 'done') {
+      statusClass = 'done';
+      label = 'Done';
+    } else if (status === 'waiting') {
+      statusClass = 'complete';
+      label = 'Ready';
+    } else if (running && latestStep && latestDone) {
+      // The current tool just finished; show its Done state until the next
+      // tool starts, exactly like the reference UI's tool_end transition.
+      statusClass = 'done';
+      label = 'Done';
+    } else if (running && latestStep) {
+      statusClass = 'calling';
+      label = 'Working';
+      showDots = true;
+    } else if (running) {
+      statusClass = 'context';
+      label = 'Processing';
+      showDots = true;
+    } else {
+      statusClass = 'done';
+      label = 'Done';
+    }
+
+    let title;
+    let detail;
+    if (latest) {
+      // One fixed sentence bound to the tool name — never the raw tool output
+      // or arguments, mirroring the reference KC-Agent tool bar.
+      title = latest;
+      detail = '';
+    } else if (status === 'done' || status === 'waiting') {
+      title = `${card.title || 'This step'} ready`;
+      detail = '';
+    } else {
+      title = `Preparing ${card.title || 'the next step'}…`;
+      detail = 'Planning the next action.';
+    }
+
+    const stepLabel = stepCount > 0 ? `Step ${stepCount}` : '';
+    return `
+      <div class="current-tool-card ${escapeHtml(statusClass)}${swapped ? ' tool-swapping' : ''}">
+        <div class="current-tool-topline">
+          <span class="current-tool-status">${escapeHtml(label)}</span>
+          ${stepLabel ? `<span class="tool-step-label">${escapeHtml(stepLabel)}</span>` : ''}
+          ${showDots ? '<span class="tool-dots"><span></span><span></span><span></span></span>' : ''}
+        </div>
+        <div class="current-tool-main">
+          <strong>${escapeHtml(sanitizeDisplayText(title))}</strong>
+          ${detail ? `<span>${escapeHtml(detail)}</span>` : ''}
+        </div>
+      </div>`;
   }
 
-  function renderTaskNode(card) {
-    const isDone = card.status === 'done';
-    const isPending = card.status === 'pending';
-    const expanded = (!isDone && !isPending) || state.expandedStageCards.has(card.id);
-    const toolCount = Math.max(card.tools.length, card.status === 'pending' ? 0 : 1);
+  // A stage card only stays "working" when it belongs to the current run and a
+  // run is actually in progress. Earlier runs (above the latest user message)
+  // and any stage left over after a run ends collapse to the completed format,
+  // so "Agent is working" never lingers on a finished step.
+  function resolveCardStatus(card, isLatest) {
+    if (card.status === 'done') return 'done';
+    if (card.status === 'pending') return 'pending';
+    if (card.status === 'waiting') return (isLatest && !state.running) ? 'waiting' : 'done';
+    return (isLatest && state.running) ? 'running' : 'done';
+  }
+
+  function renderTaskNode(card, isLatest) {
+    const status = resolveCardStatus(card, isLatest);
+    const isDone = status === 'done';
+    const isPending = status === 'pending';
+    const isWaiting = status === 'waiting';
+    const isRunning = status === 'running';
+    if (isPending) return '';
+    const expanded = isRunning || isWaiting || state.expandedStageCards.has(card.id);
+    const steps = card.toolSteps || [];
+    const toolCount = Math.max(steps.length, 1);
     const thinking = card.thinking || '';
     const output = card.output || '';
     const detailHtml = `
       <div class="run-tool-pane">
         <span class="run-section-label">Tool activity</span>
-        ${renderTaskToolActivity(card)}
+        ${renderTaskToolActivity(card, status)}
       </div>
       <div class="run-reasoning-pane">
         <span class="run-section-label">Model thinking</span>
@@ -829,7 +973,7 @@
               <div class="task-node-actions">
                 <span class="run-count">${toolCount} tool updates</span>
                 <button class="task-toggle-button" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
-                  ${expanded ? 'Hidden' : 'Open'}
+                  ${expanded ? 'Hide' : 'Open'}
                 </button>
               </div>
             </div>
@@ -838,25 +982,15 @@
         </section>
       `;
     }
-    if (!expanded) {
-      return `
-        <section class="task-node ${escapeHtml(card.status)} folded">
-          <button class="task-node-head" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="false">
-            <span class="task-node-icon">${card.status === 'done' ? 'O' : stageCardIcon(card.status)}</span>
-            <strong>${escapeHtml(card.title)}</strong>
-            <small>${escapeHtml(stageStatusText(card.status))}</small>
-          </button>
-        </section>
-      `;
-    }
     return `
-      <section class="task-node ${escapeHtml(card.status)} expanded">
-        <div class="run-card ontology-task-card ${card.status === 'done' ? 'complete' : 'working'}">
+      <section class="task-node ${escapeHtml(status)} expanded">
+        <div class="run-card ontology-task-card working">
           <div class="run-card-head">
-            <button class="task-node-title" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="true">
-              <span class="${card.status === 'done' ? 'run-check' : 'run-pulse'}">${card.status === 'done' ? '✓' : ''}</span>
-              <span>${card.status === 'waiting' ? 'Waiting for confirmation' : 'Agent is working'}</span>
-            </button>
+            <div class="task-node-title">
+              <span class="${isWaiting ? 'run-check' : 'run-pulse'}">${isWaiting ? '✓' : ''}</span>
+              <span>${isWaiting ? 'Waiting for your confirmation' : 'Agent is working'}</span>
+              ${isRunning ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>` : ''}
+            </div>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
           ${detailHtml}
@@ -865,13 +999,66 @@
     `;
   }
 
-  function renderStagePipeline(cards) {
+  // Horizontal timeline summarising a finished run as a connected line of step
+  // nodes. `reveal` triggers the one-time staggered "switch" animation (each
+  // node pops in and the connector segment fills) — it is gated by the caller
+  // so it plays exactly once per group and never replays on re-render.
+  function renderRunTimeline(cards, isLatest, reveal) {
+    const nodes = cards.map((card, idx) => {
+      const status = resolveCardStatus(card, isLatest);
+      const cls = status === 'done' ? 'done' : (status === 'running' ? 'running' : (status === 'waiting' ? 'waiting' : 'pending'));
+      const glyph = status === 'done' ? '✓' : (status === 'running' || status === 'waiting' ? '' : String(idx + 1));
+      const style = reveal ? ` style="--ti:${idx}"` : '';
+      return `
+        <li class="run-timeline-step ${cls}"${style}>
+          <span class="run-timeline-line" aria-hidden="true"></span>
+          <span class="run-timeline-dot">${glyph}</span>
+          <span class="run-timeline-label">${escapeHtml(sanitizeDisplayText(card.title || 'Step'))}</span>
+        </li>`;
+    }).join('');
+    return `<ol class="run-timeline${reveal ? ' revealing' : ''}">${nodes}</ol>`;
+  }
+
+  function renderStagePipeline(cards, isLatest, groupKey) {
     if (!cards.length) return '';
+    // The current run stays fully expanded with the live tool bar.
+    if (isLatest) {
+      return `
+        <article class="message event stage-pipeline-message">
+          <div class="avatar stage-pipeline-avatar">O</div>
+          <div class="task-node-list">
+            ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
+          </div>
+        </article>
+      `;
+    }
+    // Earlier/finished runs collapse to a slim timeline so a completed phase
+    // never competes for attention with the live one.
+    const expanded = state.expandedGroups.has(groupKey);
+    const stepWord = cards.length > 1 ? 'steps' : 'step';
+    const reveal = !state.revealedGroups.has(groupKey);
+    if (reveal) state.revealedGroups.add(groupKey);
+    const barHead = `
+      <div class="stage-group-bar-head">
+        <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
+        <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
+      </div>
+    `;
+    // Collapsed: a slim bar carrying the horizontal step timeline.
+    if (!expanded) {
+      const timeline = renderRunTimeline(cards, isLatest, reveal);
+      return `<article class="message event stage-pipeline-message collapsed-group"><div class="stage-group-bar">${barHead}${timeline}</div></article>`;
+    }
+    // Expanded: one cohesive panel — header on top, the steps laid out as a
+    // vertical timeline below. The horizontal timeline is dropped here because
+    // it would just duplicate the per-step rows.
     return `
-      <article class="message event stage-pipeline-message">
-        <div class="avatar stage-pipeline-avatar">O</div>
-        <div class="task-node-list">
-          ${cards.map(renderTaskNode).join('')}
+      <article class="message event stage-pipeline-message expanded-group">
+        <div class="stage-group-wrap">
+          <div class="stage-group-bar">${barHead}</div>
+          <div class="task-node-list">
+            ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
+          </div>
         </div>
       </article>
     `;
@@ -883,11 +1070,17 @@
     const flushEvents = () => {
       if (!eventBuffer.length) return;
       const cards = buildStageCards(eventBuffer);
-      if (cards.length) items.push({ role: 'pipeline', cards });
+      if (cards.length) {
+        const groupKey = cards.map((card) => card.id).join('-');
+        items.push({ role: 'pipeline', cards, groupKey });
+      }
       eventBuffer = [];
     };
     messages.forEach((message) => {
       if (message.role === 'event') {
+        // A run_start marks the boundary of a new run: flush the previous run's
+        // events into their own group so stages never bleed across runs.
+        if (message.kind === 'run_start' && eventBuffer.length) flushEvents();
         eventBuffer.push(message);
         return;
       }
@@ -896,8 +1089,14 @@
     });
     flushEvents();
     if (!items.some((item) => item.role === 'pipeline') && (state.stages || []).some((stage) => stage.status !== 'pending')) {
-      items.push({ role: 'pipeline', cards: buildStageCards([]) });
+      items.push({ role: 'pipeline', cards: buildStageCards([]), groupKey: 'live' });
     }
+    // Only the final pipeline group (the current run) may show live "working"
+    // state; everything above it renders as completed.
+    const lastPipelineIndex = items.reduce((acc, item, idx) => (item.role === 'pipeline' ? idx : acc), -1);
+    items.forEach((item, idx) => {
+      if (item.role === 'pipeline') item.isLatest = idx === lastPipelineIndex;
+    });
     return items;
   }
 
@@ -1027,13 +1226,19 @@
 
   function renderMessages(options = {}) {
     const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
-    const shouldAutoScroll = !options.preserveScroll && (state.forceScroll || isNearBottom());
+    // Scroll-to-bottom only happens for a genuinely new step (forceScroll is set
+    // on new user messages, run start, and each new business stage). Every other
+    // re-render preserves the reader's exact scroll position so history never
+    // jumps around on its own.
+    const shouldAutoScroll = !options.preserveScroll && state.forceScroll;
     state.forceScroll = false;
+    const prevScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const prevMsgTop = el.messages.scrollTop || 0;
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
     el.messages.innerHTML = buildMessageTimeline(visible).map((message) => {
       if (message.role === 'pipeline') {
-        return renderStagePipeline(message.cards || []);
+        return renderStagePipeline(message.cards || [], message.isLatest, message.groupKey);
       }
       if (message.role === 'user') {
         const uploads = (message.uploads || []).length
@@ -1073,6 +1278,23 @@
         });
       });
     });
+    el.messages.querySelectorAll('[data-stage-group]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const key = button.getAttribute('data-stage-group');
+        if (!key) return;
+        const anchor = button.closest('.stage-pipeline-message') || button;
+        const anchorTop = anchor.getBoundingClientRect().top;
+        if (state.expandedGroups.has(key)) state.expandedGroups.delete(key);
+        else state.expandedGroups.add(key);
+        renderMessages({ preserveScroll: true });
+        window.requestAnimationFrame(() => {
+          const nextButton = el.messages.querySelector(`[data-stage-group="${(window.CSS && CSS.escape) ? CSS.escape(key) : key}"]`);
+          const nextAnchor = nextButton?.closest('.stage-pipeline-message') || nextButton;
+          if (!nextAnchor) return;
+          window.scrollBy(0, nextAnchor.getBoundingClientRect().top - anchorTop);
+        });
+      });
+    });
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
       button.addEventListener('click', () => sendQuickReply('Confirm'));
     });
@@ -1094,6 +1316,9 @@
     if (shouldAutoScroll) {
       el.messages.scrollTop = el.messages.scrollHeight;
       scrollToLatestMessage('smooth');
+    } else {
+      el.messages.scrollTop = prevMsgTop;
+      window.scrollTo(0, prevScrollY);
     }
   }
 
@@ -1760,6 +1985,7 @@
       await startSession('');
     }
     setInterval(refreshHealth, 30000);
+    setInterval(tickElapsed, 1000);
   }
 
   init();
