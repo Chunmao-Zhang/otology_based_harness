@@ -720,16 +720,12 @@ def stage_activity(stage_id: str, status: str = "running") -> dict[str, Any]:
 
 
 def tool_activity(tool_name: str, status: str = "running", call_id: str = "", output: str = "") -> dict[str, Any]:
+    # Only a fixed, tool-name-bound sentence is surfaced; raw tool output and
+    # arguments are intentionally never sent to the client.
     content = TOOL_ACTIVITY_TEXT.get(tool_name, "Running an internal processing step.")
     extra: dict[str, Any] = {"tool": tool_name}
     if call_id:
         extra["tool_call_id"] = call_id
-    if status == "done" and output:
-        snippet = " ".join(redact_paths(str(output)).split())
-        if len(snippet) > 240:
-            snippet = snippet[:240].rstrip() + "…"
-        if snippet:
-            extra["tool_output"] = snippet
     return ui_message("event", content, kind="tool", title="Tool activity", status=status, **extra)
 
 

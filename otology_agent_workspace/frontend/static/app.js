@@ -834,8 +834,10 @@
     let title;
     let detail;
     if (latest) {
+      // One fixed sentence bound to the tool name — never the raw tool output
+      // or arguments, mirroring the reference KC-Agent tool bar.
       title = latest;
-      detail = latestDone ? (latestStep.output || '') : (card.title || '');
+      detail = '';
     } else if (status === 'done' || status === 'waiting') {
       title = `${card.title || 'This step'} ready`;
       detail = '';
@@ -882,24 +884,10 @@
     const toolCount = Math.max(steps.length, 1);
     const thinking = card.thinking || '';
     const output = card.output || '';
-    const toolLogHtml = steps.length ? `
-      <div class="run-tool-log">
-        ${steps.map((step) => `
-          <div class="tool-log-row ${step.status === 'done' ? 'done' : 'running'}">
-            <span class="tool-log-status">${step.status === 'done' ? '✓' : '●'}</span>
-            <div class="tool-log-main">
-              <strong>${escapeHtml(sanitizeDisplayText(step.label || 'Tool'))}</strong>
-              ${step.output ? `<span class="tool-log-output">${escapeHtml(sanitizeDisplayText(step.output))}</span>` : ''}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    ` : '';
     const detailHtml = `
       <div class="run-tool-pane">
         <span class="run-section-label">Tool activity</span>
         ${renderTaskToolActivity(card, status)}
-        ${toolLogHtml}
       </div>
       <div class="run-reasoning-pane">
         <span class="run-section-label">Model thinking</span>
