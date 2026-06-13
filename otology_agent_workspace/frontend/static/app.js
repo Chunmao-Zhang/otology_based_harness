@@ -73,6 +73,7 @@
     expandedStageCards: new Set(),
     forceScroll: false,
     liveStream: {},
+    toolKeys: {},
   };
 
   // ── Utilities ───────────────────────────────────────────────────────────
@@ -346,6 +347,7 @@
     }
     if (payload.type === 'run_start') {
       state.liveStream = {};
+      state.forceScroll = true;
       setRunning(true, 'The agent is working on your request…');
       return;
     }
@@ -354,7 +356,13 @@
       if (payload.status === 'done' && payload.stage) delete state.liveStream[payload.stage];
       renderStageStrip();
       renderProgressTab();
-      renderMessages({ preserveScroll: true });
+      if (payload.status === 'running') {
+        // A new business step started: bring the user to the live work.
+        state.forceScroll = true;
+        renderMessages();
+      } else {
+        renderMessages({ preserveScroll: true });
+      }
       if (payload.status === 'running' && payload.detail) {
         el.runDetail.textContent = payload.detail;
       }
@@ -378,6 +386,8 @@
     if (payload.type === 'assistant_final') {
       state.messages.push(payload.message);
       if (payload.stages) state.stages = payload.stages;
+      // Surface the deliverable (a confirmation gate or the final answer).
+      state.forceScroll = true;
       renderMessages();
       renderStageStrip();
       refreshSidebarData();
@@ -767,46 +777,99 @@
       });
   }
 
-  function renderTaskToolActivity(card) {
-    const running = card.status !== 'done' && card.status !== 'waiting';
-    const dots = '<span class="tool-dots"><span></span><span></span><span></span></span>';
-    if (!card.tools.length) {
-      const fallback = card.thinking
-        ? 'Planning the next action…'
-        : `${card.title} is ${stageStatusText(card.status).toLowerCase()}.`;
-      return `
-        <ol class="tool-steps">
-          <li class="tool-step ${running ? 'active' : 'done'}">
-            <span class="tool-step-index">${running ? '' : '✓'}</span>
-            <span class="tool-step-text">${formatInline(fallback)}</span>
-            ${running ? dots : ''}
-          </li>
-        </ol>`;
+  // Fixed single tool-activity bar that mirrors the reference KC-Agent UI:
+  // it always shows the latest tool call and floats up only when the tool
+  // actually changes, instead of growing an ever-longer list.
+  function renderTaskToolActivity(card, status) {
+    const running = status === 'running';
+    const tools = card.tools || [];
+    const stepCount = tools.length;
+    const latest = stepCount ? tools[stepCount - 1] : '';
+
+    let swapped = false;
+    if (running && latest) {
+      if (!state.toolKeys) state.toolKeys = {};
+      const key = `${card.id}:${latest}`;
+      swapped = state.toolKeys[card.id] !== key;
+      state.toolKeys[card.id] = key;
     }
-    const lastIndex = card.tools.length - 1;
-    const rows = card.tools.map((item, i) => {
-      const active = i === lastIndex && running;
-      return `
-        <li class="tool-step ${active ? 'active' : 'done'}">
-          <span class="tool-step-index">${active ? '' : '✓'}</span>
-          <span class="tool-step-text">${formatInline(item)}</span>
-          ${active ? dots : ''}
-        </li>`;
-    }).join('');
-    return `<ol class="tool-steps">${rows}</ol>`;
+
+    let statusClass = 'calling';
+    let label = 'Working';
+    let showDots = false;
+    if (status === 'done') {
+      statusClass = 'done';
+      label = 'Done';
+    } else if (status === 'waiting') {
+      statusClass = 'complete';
+      label = 'Ready';
+    } else if (running && latest) {
+      statusClass = 'calling';
+      label = 'Working';
+      showDots = true;
+    } else if (running) {
+      statusClass = 'context';
+      label = 'Processing';
+      showDots = true;
+    } else {
+      statusClass = 'done';
+      label = 'Done';
+    }
+
+    let title;
+    let detail;
+    if (latest) {
+      title = latest;
+      detail = status === 'done' ? '' : (card.title || '');
+    } else if (status === 'done' || status === 'waiting') {
+      title = `${card.title || 'This step'} ready`;
+      detail = '';
+    } else {
+      title = `Preparing ${card.title || 'the next step'}…`;
+      detail = 'Planning the next action.';
+    }
+
+    const stepLabel = stepCount > 0 ? `Step ${stepCount}` : '';
+    return `
+      <div class="current-tool-card ${escapeHtml(statusClass)}${swapped ? ' tool-swapping' : ''}">
+        <div class="current-tool-topline">
+          <span class="current-tool-status">${escapeHtml(label)}</span>
+          ${stepLabel ? `<span class="tool-step-label">${escapeHtml(stepLabel)}</span>` : ''}
+          ${showDots ? '<span class="tool-dots"><span></span><span></span><span></span></span>' : ''}
+        </div>
+        <div class="current-tool-main">
+          <strong>${escapeHtml(sanitizeDisplayText(title))}</strong>
+          ${detail ? `<span>${escapeHtml(detail)}</span>` : ''}
+        </div>
+      </div>`;
   }
 
-  function renderTaskNode(card) {
-    const isDone = card.status === 'done';
-    const isPending = card.status === 'pending';
-    const expanded = (!isDone && !isPending) || state.expandedStageCards.has(card.id);
-    const toolCount = Math.max(card.tools.length, card.status === 'pending' ? 0 : 1);
+  // A stage card only stays "working" when it belongs to the current run and a
+  // run is actually in progress. Earlier runs (above the latest user message)
+  // and any stage left over after a run ends collapse to the completed format,
+  // so "Agent is working" never lingers on a finished step.
+  function resolveCardStatus(card, isLatest) {
+    if (card.status === 'done') return 'done';
+    if (card.status === 'pending') return 'pending';
+    if (card.status === 'waiting') return (isLatest && !state.running) ? 'waiting' : 'done';
+    return (isLatest && state.running) ? 'running' : 'done';
+  }
+
+  function renderTaskNode(card, isLatest) {
+    const status = resolveCardStatus(card, isLatest);
+    const isDone = status === 'done';
+    const isPending = status === 'pending';
+    const isWaiting = status === 'waiting';
+    const isRunning = status === 'running';
+    if (isPending) return '';
+    const expanded = isRunning || isWaiting || state.expandedStageCards.has(card.id);
+    const toolCount = Math.max(card.tools.length, 1);
     const thinking = card.thinking || '';
     const output = card.output || '';
     const detailHtml = `
       <div class="run-tool-pane">
         <span class="run-section-label">Tool activity</span>
-        ${renderTaskToolActivity(card)}
+        ${renderTaskToolActivity(card, status)}
       </div>
       <div class="run-reasoning-pane">
         <span class="run-section-label">Model thinking</span>
@@ -838,25 +901,14 @@
         </section>
       `;
     }
-    if (!expanded) {
-      return `
-        <section class="task-node ${escapeHtml(card.status)} folded">
-          <button class="task-node-head" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="false">
-            <span class="task-node-icon">${card.status === 'done' ? 'O' : stageCardIcon(card.status)}</span>
-            <strong>${escapeHtml(card.title)}</strong>
-            <small>${escapeHtml(stageStatusText(card.status))}</small>
-          </button>
-        </section>
-      `;
-    }
     return `
-      <section class="task-node ${escapeHtml(card.status)} expanded">
-        <div class="run-card ontology-task-card ${card.status === 'done' ? 'complete' : 'working'}">
+      <section class="task-node ${escapeHtml(status)} expanded">
+        <div class="run-card ontology-task-card working">
           <div class="run-card-head">
-            <button class="task-node-title" type="button" data-stage-card="${escapeHtml(card.id)}" aria-expanded="true">
-              <span class="${card.status === 'done' ? 'run-check' : 'run-pulse'}">${card.status === 'done' ? '✓' : ''}</span>
-              <span>${card.status === 'waiting' ? 'Waiting for confirmation' : 'Agent is working'}</span>
-            </button>
+            <div class="task-node-title">
+              <span class="${isWaiting ? 'run-check' : 'run-pulse'}">${isWaiting ? '✓' : ''}</span>
+              <span>${isWaiting ? 'Waiting for your confirmation' : 'Agent is working'}</span>
+            </div>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
           ${detailHtml}
@@ -865,13 +917,13 @@
     `;
   }
 
-  function renderStagePipeline(cards) {
+  function renderStagePipeline(cards, isLatest) {
     if (!cards.length) return '';
     return `
       <article class="message event stage-pipeline-message">
         <div class="avatar stage-pipeline-avatar">O</div>
         <div class="task-node-list">
-          ${cards.map(renderTaskNode).join('')}
+          ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
         </div>
       </article>
     `;
@@ -898,6 +950,12 @@
     if (!items.some((item) => item.role === 'pipeline') && (state.stages || []).some((stage) => stage.status !== 'pending')) {
       items.push({ role: 'pipeline', cards: buildStageCards([]) });
     }
+    // Only the final pipeline group (the current run) may show live "working"
+    // state; everything above it renders as completed.
+    const lastPipelineIndex = items.reduce((acc, item, idx) => (item.role === 'pipeline' ? idx : acc), -1);
+    items.forEach((item, idx) => {
+      if (item.role === 'pipeline') item.isLatest = idx === lastPipelineIndex;
+    });
     return items;
   }
 
@@ -1027,13 +1085,19 @@
 
   function renderMessages(options = {}) {
     const visible = state.messages.filter((message) => ['user', 'assistant', 'system', 'event'].includes(message.role));
-    const shouldAutoScroll = !options.preserveScroll && (state.forceScroll || isNearBottom());
+    // Scroll-to-bottom only happens for a genuinely new step (forceScroll is set
+    // on new user messages, run start, and each new business stage). Every other
+    // re-render preserves the reader's exact scroll position so history never
+    // jumps around on its own.
+    const shouldAutoScroll = !options.preserveScroll && state.forceScroll;
     state.forceScroll = false;
+    const prevScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const prevMsgTop = el.messages.scrollTop || 0;
     el.hero.style.display = visible.length ? 'none' : '';
     el.messages.classList.toggle('active', visible.length > 0);
     el.messages.innerHTML = buildMessageTimeline(visible).map((message) => {
       if (message.role === 'pipeline') {
-        return renderStagePipeline(message.cards || []);
+        return renderStagePipeline(message.cards || [], message.isLatest);
       }
       if (message.role === 'user') {
         const uploads = (message.uploads || []).length
@@ -1094,6 +1158,9 @@
     if (shouldAutoScroll) {
       el.messages.scrollTop = el.messages.scrollHeight;
       scrollToLatestMessage('smooth');
+    } else {
+      el.messages.scrollTop = prevMsgTop;
+      window.scrollTo(0, prevScrollY);
     }
   }
 
