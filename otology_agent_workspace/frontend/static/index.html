@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Ontology QA Agent</title>
+  <link rel="icon" href="/static/assets/knowcoder-logo.svg" type="image/svg+xml">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=20260613-status-polish">
+</head>
+<body class="light-theme" data-agent-id="ontology_coordinator">
+  <aside class="side-rail" id="side-rail" aria-label="Session history">
+    <div class="side-rail-top">
+      <button class="rail-new-chat" id="rail-new-chat" type="button">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M8 1.5a.75.75 0 0 1 .75.75v5h5a.75.75 0 0 1 0 1.5h-5v5a.75.75 0 0 1-1.5 0v-5h-5a.75.75 0 0 1 0-1.5h5v-5A.75.75 0 0 1 8 1.5Z"/></svg>
+        <span>New chat</span>
+      </button>
+      <button class="rail-collapse" id="rail-collapse" type="button" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/></svg>
+      </button>
+    </div>
+    <div class="side-rail-label">Chats</div>
+    <div class="side-rail-list" id="session-list"></div>
+  </aside>
+
+  <header class="navbar">
+    <div class="navbar-content">
+      <div class="nav-left">
+        <button class="rail-toggle" id="rail-toggle" title="Show chat history" aria-label="Show chat history">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>
+          <span class="rail-toggle-text">Chat History</span>
+        </button>
+        <div class="logo" id="brand-home" title="Back to home">
+          <img src="/static/assets/knowcoder-logo.svg" alt="Ontology QA logo" class="logo-img">
+          <span class="logo-text-wrap">
+            <span class="logo-text">Ontology QA Agent</span>
+            <span class="logo-subtext">From question to ontology schema to verifiable answers</span>
+          </span>
+        </div>
+      </div>
+      <div class="nav-right">
+        <div class="status-chip" id="status-pill"><span class="status-dot"></span><span>Checking service</span></div>
+        <div class="model-chip" id="model-chip">Model</div>
+        <button class="icon-btn" id="theme-toggle" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 12.5A4.5 4.5 0 1 0 8 3.5a4.5 4.5 0 0 0 0 9Zm0 1A5.5 5.5 0 1 1 8 2.5a5.5 5.5 0 0 1 0 11ZM8 .5a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0V1A.5.5 0 0 1 8 .5Zm0 13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0v-1a.5.5 0 0 1 .5-.5ZM.5 8a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1H1A.5.5 0 0 1 .5 8Zm13 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1a.5.5 0 0 1-.5-.5Z"/></svg>
+        </button>
+        <button class="nav-new-chat" id="new-chat"><span>New chat</span><strong>⌘N</strong></button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <div class="chat-container">
+      <section class="welcome-section" id="hero">
+        <div class="hero-title-row">
+          <div class="hero-graph-icon" aria-label="Ontology question answering icon">
+            <span class="hero-node">Q</span>
+            <span class="hero-edge"></span>
+            <span class="hero-node">Schema</span>
+            <span class="hero-edge"></span>
+            <span class="hero-node answer">A</span>
+          </div>
+          <h1 class="welcome-title">Ontology QA Agent</h1>
+        </div>
+        <p class="welcome-description">An ontology-centric question answering agent: it clarifies your question, builds an ontology schema from uploaded files and web evidence, then — after your confirmation — extracts data and solves the problem with code in a dedicated workspace, delivering grounded answers.</p>
+        <div class="quick-metrics" id="quick-metrics">
+          <div class="metric-card"><span>Pipeline</span><strong>8-step visual workflow</strong></div>
+          <div class="metric-card"><span>Files</span><strong id="upload-metric">0 uploaded file(s)</strong></div>
+        </div>
+        <button class="hero-upload-btn" id="hero-upload" type="button">
+          <span>Upload files or view the schema</span>
+          <small>Open the Ontology Workbench</small>
+        </button>
+      </section>
+
+      <section class="chat-messages" id="messages" aria-live="polite"></section>
+    </div>
+  </main>
+
+  <section class="input-section" id="input-section">
+    <div class="input-shell">
+      <div class="run-indicator" id="run-indicator">
+        <span></span>
+        <strong>Agent is working</strong>
+        <em id="run-detail"></em>
+        <button id="reset-run" type="button">Reset</button>
+      </div>
+      <div class="onto-stage-strip" id="stage-strip" hidden></div>
+      <div class="input-container">
+        <div class="kb-scope-segment onto-upload-segment" id="upload-segment">
+          <div class="kb-scope-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <defs>
+                <linearGradient id="kbicon-grad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#3b82f6"/>
+                  <stop offset="100%" stop-color="#1d4ed8"/>
+                </linearGradient>
+              </defs>
+              <path d="M5 7.5L12 4l7 3.5v9L12 20l-7-3.5v-9z" fill="url(#kbicon-grad)" opacity="0.18"/>
+              <path d="M5 7.5L12 4l7 3.5v9L12 20l-7-3.5v-9z" fill="none" stroke="url(#kbicon-grad)" stroke-width="1.4" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="2" fill="url(#kbicon-grad)"/>
+              <path d="M12 10V5M12 14v5M10 12H5M14 12h5" stroke="url(#kbicon-grad)" stroke-width="1.2" stroke-linecap="round" opacity="0.55"/>
+            </svg>
+          </div>
+          <div class="kb-scope-text">
+            <span class="kb-scope-kicker">Attached files</span>
+            <span class="kb-scope-current" id="upload-current">No files attached</span>
+          </div>
+          <button type="button" class="attach-add-btn" id="attach-add" title="Attach files from your computer" aria-label="Attach files from your computer">
+            <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" d="M10 4.5v11M4.5 10h11"/></svg>
+          </button>
+          <input type="file" id="chat-file-input" accept=".csv,.txt,.md" multiple hidden>
+          <div class="attach-chips" id="attach-chips" hidden></div>
+        </div>
+        <div class="input-segment">
+          <textarea class="chat-input" id="message-input" rows="1" placeholder="Ask the Ontology QA Agent..." style="border:0;outline:0;box-shadow:none;-webkit-appearance:none;appearance:none;"></textarea>
+          <button class="send-btn" id="send-button" aria-label="Send">
+            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M1.7 1.05a.5.5 0 0 0-.69.56l1.4 4.84a.5.5 0 0 0 .4.36l5.7.95c.27.04.27.42 0 .46l-5.7.95a.5.5 0 0 0-.4.36L1.01 14.4a.5.5 0 0 0 .7.55l13.98-7a.5.5 0 0 0 0-.9L1.7 1.05Z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="ai-disclaimer">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14Zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm.93-9.41-2.29.28-.08.38.45.08c.29.07.35.18.29.47l-.74 3.47c-.2.9.1 1.32.8 1.32.55 0 1.18-.25 1.47-.6l.09-.42c-.2.18-.5.25-.69.25-.27 0-.37-.2-.3-.53l1-4.7ZM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg>
+        <span>Enter to send · Shift + Enter for a new line · Confirmation steps will be prompted in the chat</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="fab-container" id="fab-container">
+    <button class="fab-main" id="fab-main" type="button" title="Open the Ontology Workbench" aria-label="Open the Ontology Workbench" aria-controls="fab-evidence fab-schema fab-progress" aria-expanded="false">
+      <span class="fab-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="18" height="18"><path fill="currentColor" d="M1 2.5A1.5 1.5 0 0 1 2.5 1h3A1.5 1.5 0 0 1 7 2.5v3A1.5 1.5 0 0 1 5.5 7h-3A1.5 1.5 0 0 1 1 5.5v-3Zm8 0A1.5 1.5 0 0 1 10.5 1h3A1.5 1.5 0 0 1 15 2.5v3A1.5 1.5 0 0 1 13.5 7h-3A1.5 1.5 0 0 1 9 5.5v-3ZM1 10.5A1.5 1.5 0 0 1 2.5 9h3A1.5 1.5 0 0 1 7 10.5v3A1.5 1.5 0 0 1 5.5 15h-3A1.5 1.5 0 0 1 1 13.5v-3Zm8 0A1.5 1.5 0 0 1 10.5 9h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 9 13.5v-3Z"/></svg>
+      </span>
+      <span class="fab-copy">
+        <strong>Ontology Workbench</strong>
+        <small>Files, schema &amp; run results</small>
+      </span>
+      <span class="fab-caret" aria-hidden="true">⌃</span>
+    </button>
+    <button class="fab-action" id="fab-evidence" type="button" title="Open Files &amp; Evidence" aria-label="Open Files and Evidence" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">Upload</span>
+      <strong>Files &amp; Evidence</strong>
+      <small>Upload CSV / TXT / MD and review the evidence manifest</small>
+    </button>
+    <button class="fab-action" id="fab-schema" type="button" title="Open Schema Studio" aria-label="Open Schema Studio" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">Edit</span>
+      <strong>Schema Studio</strong>
+      <small>Review, edit and confirm the ontology schema</small>
+    </button>
+    <button class="fab-action" id="fab-progress" type="button" title="Open Run &amp; Results" aria-label="Open Run and Results" aria-hidden="true" tabindex="-1">
+      <span class="fab-action-kicker">View</span>
+      <strong>Run &amp; Results</strong>
+      <small>Pipeline progress and extraction summary</small>
+    </button>
+  </div>
+
+  <aside class="activities-panel" id="activities-panel">
+    <div class="panel-header">
+      <div class="panel-tabs">
+        <button class="panel-tab active" data-tab="evidence" id="evidence-tab">Files &amp; Evidence</button>
+        <button class="panel-tab" data-tab="schema" id="schema-tab">Schema Studio</button>
+        <button class="panel-tab" data-tab="progress" id="progress-tab">Run &amp; Results</button>
+      </div>
+      <button class="close-panel" id="close-panel" aria-label="Close panel">×</button>
+    </div>
+    <div class="panel-body">
+      <section class="panel-section active" id="evidence-content"></section>
+      <section class="panel-section" id="schema-content"></section>
+      <section class="panel-section" id="progress-content"></section>
+    </div>
+  </aside>
+
+  <div class="modal-overlay" id="confirm-overlay" hidden>
+    <div class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+      <div class="confirm-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+      </div>
+      <h3 class="confirm-title" id="confirm-title">Delete chat?</h3>
+      <p class="confirm-text" id="confirm-text">This conversation and its files, evidence and results will be permanently removed.</p>
+      <div class="confirm-actions">
+        <button class="confirm-btn confirm-cancel" id="confirm-cancel" type="button">Cancel</button>
+        <button class="confirm-btn confirm-danger" id="confirm-ok" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="clarify-overlay" hidden>
+    <div class="clarify-modal-card" role="dialog" aria-modal="true" aria-labelledby="clarify-modal-title">
+      <div class="clarify-modal-head">
+        <div>
+          <span class="clarify-modal-kicker">Edit clarification</span>
+          <h3 id="clarify-modal-title">Review before continuing</h3>
+          <p>Adjust the problem statement and solution steps, then confirm.</p>
+        </div>
+        <button class="clarify-modal-close" id="clarify-modal-close" type="button" aria-label="Close edit dialog">×</button>
+      </div>
+      <div class="clarify-form clarify-modal-form">
+        <label class="clarify-label" for="clarify-modal-problem">Problem</label>
+        <textarea class="clarify-problem" id="clarify-modal-problem" rows="3"></textarea>
+        <label class="clarify-label">Solution steps</label>
+        <div class="clarify-steps" id="clarify-modal-steps"></div>
+        <button type="button" class="clarify-add-step" id="clarify-modal-add-step">+ Add step</button>
+      </div>
+      <div class="clarify-modal-actions">
+        <button class="gate-edit" id="clarify-modal-cancel" type="button">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3.2 3.2a.75.75 0 0 1 1.06 0L8 6.94l3.74-3.74a.75.75 0 1 1 1.06 1.06L9.06 8l3.74 3.74a.75.75 0 1 1-1.06 1.06L8 9.06 4.26 12.8a.75.75 0 1 1-1.06-1.06L6.94 8 3.2 4.26a.75.75 0 0 1 0-1.06Z"/></svg>
+          Cancel
+        </button>
+        <button class="gate-confirm" id="clarify-modal-save" type="button">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M13.78 3.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 8.28a.75.75 0 1 1 1.06-1.06L6 9.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+          Confirm &amp; Continue
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.STUDIO_CONFIG = {
+      agentId: "ontology_coordinator",
+      brand: "Ontology QA Agent"
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+  <script src="/static/app.js?v=20260613-status-polish"></script>
+</body>
+</html>

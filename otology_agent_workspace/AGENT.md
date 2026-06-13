@@ -22,10 +22,10 @@ When delegating with the `task` tool:
 
 - Do not mention built-in file tools such as `read_file`, `write_file`, `execute`, `ls`, `glob`, or `grep`.
 - Explicitly tell the subagent to use only its ontology workspace tools.
-- For evidence collection, tell `evidence_collector` to use `source_reader`, `evidence_retriever`, and `web_search` only when necessary.
+- For evidence collection, tell `evidence_collector` to use `source_reader`, `evidence_retriever`, and `web_search` only when necessary, and to record its schema plan with `write_todos` per its Planning Contract before writing the manifest.
 - For schema construction, tell `schema_builder` to use `schema_validator` after producing or patching a draft schema.
 - Schema confirmation is handled by the harness/backend after the user confirms the displayed schema.
-- For data extraction, tell `data_extractor` to stay inside the confirmed schema and evidence manifest.
+- For data extraction, tell `data_extractor` to stay inside the confirmed schema and evidence manifest, reusing the persisted web evidence registered in the manifest instead of repeating searches; supplementary search is allowed only when a schema element has no supporting data in any registered source.
 - Before showing `problem_clarifier` output to the user, require the local harness/backend to validate the raw subagent output with `otology_agent_workspace/utils/problem_clarifier_contract.py`.
 
 ## Required Workflow
@@ -86,6 +86,8 @@ Expected response:
 }
 ```
 
+The manifest at `evidence_manifest_path` must contain a `schema_plan` list (entities and relations planned from the evidence, mirroring the `[plan]` todos that `evidence_collector` recorded with `write_todos`).
+
 ### Step 3: Build draft schema
 
 Call `schema_builder` with:
@@ -100,7 +102,7 @@ Call `schema_builder` with:
 
 Rules:
 
-- `schema_builder` writes `draft_schema.py`.
+- `schema_builder` writes `draft_schema.py`, following the `schema_plan` in the evidence manifest as the blueprint for entities and relations.
 - `schema_builder` must call `schema_validator`.
 - Do not create instances or final answers.
 - Do not perform web search unless Step 2 marked evidence insufficient.

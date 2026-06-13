@@ -50,8 +50,15 @@ Return only valid JSON:
 - Write extracted data through the harness execution layer, not by adding ad hoc fields to the schema.
 - Do not add fields that are not in the schema.
 - Relation object ids must refer to existing instances.
-- Include `source_refs` and `confidence` where possible.
-- Search only if the evidence manifest says web evidence is required.
+- Include `source_refs` and `confidence` where possible. `source_refs` must use the `source_id` values registered in the evidence manifest.
+
+## Evidence Reuse and Supplementary Search
+
+- Read the evidence manifest first and reuse its registered sources: uploads via `source_reader` / `evidence_retriever`, and persisted web evidence from the `evidence_path` files under `intermediate/web_evidence/`.
+- Do not repeat searches that `evidence_collector` already performed.
+- Call `web_search` only when a schema element has no supporting data in any registered source. Use at most one supplementary search call and at most 3 results.
+- Persist every kept supplementary result to `runs/ontology_workspace_runs/<run_id>/intermediate/web_evidence/<source_id>.json` with the same shape `evidence_collector` uses, but with `"collected_stage": "extract"`, continuing the `web_NNN` id sequence.
+- Append the new sources to the manifest `sources` list; never remove or rewrite existing entries.
 
 ## Boundaries
 
