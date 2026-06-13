@@ -50,6 +50,7 @@ MOCK_MODE = os.environ.get("ONTOLOGY_UI_MOCK", "") == "1"
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _AGENT_LOCK = threading.Lock()
 _AGENT_SINGLETON = None
+_AGENT_CACHE: dict[str, Any] = {}
 
 PIPELINE_STAGES = [
     {"id": "clarify", "label": "Clarify Question"},
@@ -594,6 +595,23 @@ def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
             stage["status"] = status
 
 
+def get_stage_status(session: dict[str, Any], stage_id: str) -> str:
+    for stage in session.get("stages", []):
+        if stage.get("id") == stage_id:
+            return str(stage.get("status", "pending"))
+    return "pending"
+
+
+def infer_waiting_gate(session: dict[str, Any], final: str, clarification: dict[str, Any] | None) -> str:
+    if clarification:
+        return "confirm_problem"
+    problem_status = get_stage_status(session, "confirm_problem")
+    evidence_status = get_stage_status(session, "evidence")
+    if problem_status != "done" and evidence_status == "pending":
+        return "confirm_problem"
+    return detect_gate(final)
+
+
 def stage_label(stage_id: str) -> str:
     for stage in PIPELINE_STAGES:
         if stage["id"] == stage_id:
@@ -645,7 +663,32 @@ def detect_gate(text: str) -> str:
     return ""
 
 
-def get_cached_agent():
+def get_cached_agent(agent_id: str = AGENT_ID):
+    global _AGENT_SINGLETON
+    if agent_id == AGENT_ID and _AGENT_SINGLETON is not None:
+        return _AGENT_SINGLETON
+    if agent_id in _AGENT_CACHE:
+        return _AGENT_CACHE[agent_id]
+    with _AGENT_LOCK:
+        if agent_id == AGENT_ID and _AGENT_SINGLETON is not None:
+            return _AGENT_SINGLETON
+        if agent_id in _AGENT_CACHE:
+            return _AGENT_CACHE[agent_id]
+        from harness.agents.agent_loop import build_agent
+        from harness.agents.registry import AgentRegistry
+        from harness.config import load_config
+
+        cfg = load_config(str(ROOT / "harness.json"))
+        registry = AgentRegistry(cfg)
+        agent_cfg = registry.get(agent_id)
+        cached = (build_agent(agent_cfg, ".", registry=registry), agent_cfg)
+        _AGENT_CACHE[agent_id] = cached
+        if agent_id == AGENT_ID:
+            _AGENT_SINGLETON = cached
+        return cached
+
+
+def get_cached_coordinator_agent():
     global _AGENT_SINGLETON
     if _AGENT_SINGLETON is None:
         with _AGENT_LOCK:
@@ -713,6 +756,44 @@ def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
                 content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
             if content and not tool_calls:
                 final_content = content
+    return final_content
+
+
+def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit) -> str:
+    from langchain_core.messages import HumanMessage
+
+    agent, _agent_cfg = get_cached_agent("problem_clarifier")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["HARNESS_ROOT"] = str(ROOT)
+    os.environ["HARNESS_AGENT_ID"] = "problem_clarifier"
+    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
+    payload = json.dumps({"question": question, "upload_paths": upload_paths}, ensure_ascii=False)
+    emit({"type": "stage", "stage": "clarify", "status": "running"})
+
+    final_content = ""
+    config = {"configurable": {"thread_id": f"{thread_id}:clarify" or "clarify"}}
+    for item in agent.stream(
+        {"messages": [HumanMessage(content=payload)]},
+        config=config,
+        stream_mode=["values"],
+        subgraphs=True,
+    ):
+        if not isinstance(item, tuple) or len(item) != 3:
+            continue
+        namespace, _mode, data = item
+        if namespace != ():
+            continue
+        messages = data.get("messages", []) if isinstance(data, dict) else []
+        if not messages:
+            continue
+        last = messages[-1]
+        if getattr(last, "type", "") != "ai":
+            continue
+        content = getattr(last, "content", "") or ""
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        if content:
+            final_content = content
     return final_content
 
 
@@ -890,6 +971,7 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
     await websocket.send_text(json.dumps({"type": "activity", "message": start_activity}, ensure_ascii=False))
 
     agent_input = content
+    paths: list[str] = []
     if upload_names:
         upload_root = Path("otology_agent_workspace/data/uploads") / safe_session_id(session_id)
         paths = [str(upload_root / name) for name in upload_names]
@@ -905,6 +987,8 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
         try:
             if MOCK_MODE:
                 final = run_mock_agent(agent_input, session, emit)
+            elif get_stage_status(session, "confirm_problem") != "done" and get_stage_status(session, "evidence") == "pending":
+                final = run_problem_clarifier_agent(content, paths, session["thread_id"], session_run_dir(session), emit)
             else:
                 final = run_real_agent(agent_input, session["thread_id"], session_run_dir(session), emit)
             emit({"type": "_done", "final": final})
@@ -927,7 +1011,7 @@ async def handle_chat(websocket: WebSocket, session_id: str, content: str, uploa
                 session = STORE.get(session_id)
                 if final:
                     clarification = extract_clarification(final)
-                    gate = "confirm_problem" if clarification else detect_gate(final)
+                    gate = infer_waiting_gate(session, final, clarification)
                     if gate:
                         already_waiting = any(
                             item.get("id") == gate and item.get("status") == "waiting"
