@@ -7241,3 +7241,54 @@ body.modal-open { overflow: hidden; }
   border-bottom: 1px solid var(--line);
   padding-bottom: 11px;
 }
+
+/* ── Live elapsed / heartbeat badge ──────────────────────────────────────
+   Ticks every second while the agent is running. Because ~97% of a run is
+   model inference between tool calls (no events arrive during it), this badge
+   keeps climbing through the quiet gaps so a slow step reads as "still
+   working" rather than "frozen". A small heartbeat dot pulses alongside. */
+.work-elapsed {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .2px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: work-elapsed-breathe 1.8s ease-in-out infinite;
+}
+
+.work-elapsed::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: work-elapsed-heartbeat 1.4s ease-out infinite;
+}
+
+.task-node-title .work-elapsed { margin-left: 2px; }
+.current-tool-topline .work-elapsed { height: 22px; }
+
+@keyframes work-elapsed-breathe {
+  0%, 100% { opacity: .82; }
+  50%      { opacity: 1; }
+}
+
+@keyframes work-elapsed-heartbeat {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-elapsed,
+  .work-elapsed::before { animation: none; }
+}
