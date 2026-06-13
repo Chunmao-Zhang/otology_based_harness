@@ -948,41 +948,39 @@
 
   function renderStagePipeline(cards, isLatest, groupKey) {
     if (!cards.length) return '';
-    const stepWord = cards.length > 1 ? 'steps' : 'step';
-    const summaryTitle = `<span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>`;
-    // Earlier runs collapse to a compact summary so a finished phase never
-    // competes for attention with the phase that is currently running. Only
-    // the latest run group stays fully expanded with live activity.
-    const collapsible = !isLatest;
-    const expanded = !collapsible || state.expandedGroups.has(groupKey);
-    if (collapsible && !expanded) {
+    // The current run stays fully expanded with the live tool bar.
+    if (isLatest) {
       return `
-        <article class="message event stage-pipeline-message collapsed-group">
+        <article class="message event stage-pipeline-message">
           <div class="avatar stage-pipeline-avatar">O</div>
-          <div class="stage-group-summary">
-            <div class="stage-group-summary-head">
-              ${summaryTitle}
-              <button class="task-toggle-button" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="false">Show details</button>
-            </div>
-            <div class="stage-group-chips">
-              ${cards.map((card) => `<span class="stage-done-chip">✓ ${escapeHtml(card.title)}</span>`).join('')}
-            </div>
+          <div class="task-node-list">
+            ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
           </div>
         </article>
       `;
     }
-    const groupHead = collapsible ? `
-      <div class="stage-group-head">
-        ${summaryTitle}
-        <button class="task-toggle-button" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="true">Hide</button>
+    // Earlier/finished runs collapse to a slim, full-width summary bar so a
+    // completed phase never competes for attention with the live one.
+    const expanded = state.expandedGroups.has(groupKey);
+    const stepWord = cards.length > 1 ? 'steps' : 'step';
+    const chips = cards.map((card) => `<span class="stage-done-chip">✓ ${escapeHtml(card.title)}</span>`).join('');
+    const bar = `
+      <div class="stage-group-bar">
+        <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
+        ${expanded ? '' : `<div class="stage-group-chips">${chips}</div>`}
+        <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
       </div>
-    ` : '';
+    `;
+    if (!expanded) {
+      return `<article class="message event stage-pipeline-message collapsed-group">${bar}</article>`;
+    }
     return `
-      <article class="message event stage-pipeline-message">
-        <div class="avatar stage-pipeline-avatar">O</div>
-        <div class="task-node-list">
-          ${groupHead}
-          ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
+      <article class="message event stage-pipeline-message expanded-group">
+        <div class="stage-group-wrap">
+          ${bar}
+          <div class="task-node-list">
+            ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
+          </div>
         </div>
       </article>
     `;

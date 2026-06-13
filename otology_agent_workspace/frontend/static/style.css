@@ -765,7 +765,7 @@ body:not(.rail-collapsed) .input-section {
 .chat-messages {
   display: none;
   flex-direction: column;
-  gap: 22px;
+  gap: 16px;
   width: 100%;
   padding: 10px 0 24px;
 }
@@ -6948,61 +6948,81 @@ body.modal-open { overflow: hidden; }
   white-space: pre-wrap;
 }
 
-/* ── Collapsed run group (earlier phases) ────────────────────────────── */
-.stage-pipeline-message.collapsed-group {
-  align-items: center;
+/* ── Completed run group (earlier phases) ────────────────────────────── */
+.stage-pipeline-message.collapsed-group,
+.stage-pipeline-message.expanded-group {
+  display: block;
 }
 
-.stage-group-summary {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
-  padding: 12px 14px;
+.stage-group-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
 
-.stage-group-summary-head,
-.stage-group-head {
+.stage-group-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  transition: background .15s ease, border-color .15s ease;
 }
 
-.stage-group-head {
-  margin-bottom: 8px;
+.collapsed-group .stage-group-bar:hover {
+  background: color-mix(in srgb, var(--success) 6%, var(--panel));
+  border-color: color-mix(in srgb, var(--success) 24%, var(--line));
+}
+
+.expanded-group .stage-group-bar {
+  border-radius: var(--radius-md);
 }
 
 .stage-group-summary-title {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink);
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 750;
+  color: var(--ink-soft);
+  white-space: nowrap;
 }
 
 .stage-group-summary-title .run-check {
-  color: var(--success);
-  font-weight: 800;
+  width: 17px;
+  height: 17px;
+  font-size: 10px;
 }
 
 .stage-group-chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  min-width: 0;
+}
+
+.stage-group-toggle {
+  margin-left: auto;
+  min-width: 0;
+  min-height: 26px;
+  padding: 4px 12px;
+  font-size: 11.5px;
 }
 
 .stage-done-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 9px;
+  padding: 2px 9px;
   border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 650;
   color: var(--success);
-  background: color-mix(in srgb, var(--success) 12%, transparent);
+  background: color-mix(in srgb, var(--success) 11%, transparent);
 }
