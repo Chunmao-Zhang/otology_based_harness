@@ -113,33 +113,54 @@ input:focus-visible {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 12px 0 9px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--ink-soft);
+  gap: 9px;
+  height: 38px;
+  padding: 0 15px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-strong);
+  color: var(--ink);
   cursor: pointer;
-  transition: background .15s ease, color .15s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+  transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease;
 }
 
-.rail-toggle svg { flex: 0 0 auto; }
+.rail-toggle svg { flex: 0 0 auto; color: var(--ink-muted); transition: color .16s ease; }
 
 .rail-toggle-text {
   font-size: 13px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   white-space: nowrap;
 }
 
 .rail-toggle:hover {
   color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
   background: var(--accent-soft);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 16%, transparent);
 }
+
+.rail-toggle:hover svg { color: var(--accent); }
 
 body:not(.rail-collapsed) .rail-toggle {
   display: none;
+}
+
+/* Keep the brand title anchored in the same spot whether the rail is open or
+   collapsed: on desktop the collapsed toggle floats at the far left and the
+   logo keeps the rail-width offset so it never shifts. */
+@media (min-width: 901px) {
+  body.rail-collapsed .rail-toggle {
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    margin: 0;
+  }
+  body.rail-collapsed .logo {
+    margin-left: var(--rail-w);
+  }
 }
 
 .navbar-content {
@@ -4896,7 +4917,8 @@ textarea#message-input.chat-input:focus-visible,
   }
 
   .navbar-content {
-    width: calc(100% - 22px);
+    width: 100%;
+    padding: 0 11px;
   }
 
   .logo-subtext,
@@ -5146,7 +5168,8 @@ textarea#message-input.chat-input:focus-visible,
 
 @media (max-width: 420px) {
   .navbar-content {
-    width: calc(100% - 16px);
+    width: 100%;
+    padding: 0 8px;
   }
 
   .logo {
