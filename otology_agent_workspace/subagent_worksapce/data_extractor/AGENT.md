@@ -97,6 +97,20 @@ Return only valid JSON:
 - Include `source_refs` and `confidence` where possible. `source_refs` must use
   the `source_id` values registered in the evidence manifest.
 
+## Field Semantics (critical)
+
+- Fill each field with the meaning the **question** intends for it, not a
+  surface token that happens to share the name. For example `sub_domain` means
+  the company's business sub-domain (e.g. "数据分析", "云数据平台", "分析软件"),
+  **not** a web/DNS domain like `databricks.com`.
+- Populate every declared forward relation field whenever the evidence supports
+  it. In particular, if the schema declares a company→investor relation
+  (e.g. `Company.investors`), fill it with the investor `_id`s that funded that
+  company, and emit the corresponding investor instances. Required relations the
+  question joins on must not be left empty when evidence exists for them.
+- Each relation value is a list of `_id`s of instances you also emit, so both
+  endpoints of every relation row exist in `instances.json`.
+
 ## Evidence Reuse and Supplementary Search
 
 - Read the evidence manifest first and reuse its registered sources: uploads via `source_reader` / `evidence_retriever`, and persisted web evidence from the `evidence_path` files under `intermediate/web_evidence/`.

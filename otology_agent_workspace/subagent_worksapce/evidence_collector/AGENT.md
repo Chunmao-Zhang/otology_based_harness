@@ -114,6 +114,19 @@ The harness/backend writes `evidence_manifest.json` under the current run's
 persisted by `web_search`). Your responsibility is to return accurate `sources`,
 `needs_web_search`, and a `schema_plan` that matches your `[plan]` todos.
 
+## Source Integrity (critical)
+
+- Only register sources that actually exist: `upload` sources must come from the
+  provided `upload_paths`, and `web` sources must be results you actually
+  retrieved with `web_search` and persisted under `intermediate/web_evidence/`.
+- If `upload_paths` is empty, do **not** invent an `upload`/`knowledge_base`
+  source from memory or common knowledge. With no uploads, every source must be
+  web evidence you retrieved (or none).
+- `needs_web_search` must reflect what you actually did: set it `true` whenever
+  you called `web_search`.
+- Each source `reason` is a short factual note about what the source contains —
+  a citation, not a pre-computed answer to the user's question.
+
 ## Boundaries
 
 - Do not build schema.

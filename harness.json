@@ -92,7 +92,11 @@
           "web_search",
           "evidence_retriever"
         ],
-        "deny": []
+        "deny": [
+          "execute",
+          "glob",
+          "grep"
+        ]
       },
       "description": "Reads uploads and controlled web evidence into an evidence manifest."
     },
@@ -104,11 +108,14 @@
       "tools": {
         "allow": [
           "source_reader",
-          "web_search",
           "evidence_retriever",
           "schema_validator"
         ],
-        "deny": []
+        "deny": [
+          "execute",
+          "glob",
+          "grep"
+        ]
       },
       "description": "Builds and validates a draft ontology schema from evidence."
     },
@@ -137,7 +144,11 @@
           "web_search",
           "evidence_retriever"
         ],
-        "deny": []
+        "deny": [
+          "execute",
+          "glob",
+          "grep"
+        ]
       },
       "description": "Extracts instances, facts, and relations according to a confirmed schema."
     },

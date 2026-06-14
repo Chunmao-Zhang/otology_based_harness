@@ -71,6 +71,48 @@ result on that exact text.
 - Always call `schema_validator` on your `schema_text` before returning.
 - If validation fails, repair once and validate again.
 
+## Relation Direction Rule (critical)
+
+The backend only materializes **forward** relation edges into `relations.csv`.
+A field marked `# reverse` produces no edge by itself; it is only a mirror view
+of a forward relation declared on the other class.
+
+- Every relationship the question needs to traverse or join on **must** be
+  declared as a forward `List["TargetClass"]` field on exactly one of the two
+  classes (its primary direction). Pick one primary direction per relationship.
+- **Never** model a required relationship using `# reverse` on both ends. If you
+  do, no edge is produced and the question becomes unanswerable.
+- A `# reverse` field is allowed only as the inverse view of a forward relation
+  that already exists on the other class — never as the only declaration of a
+  relationship.
+
+Worked example — for "two companies funded by the same investor, one founder
+previously worked at the other company", the funding and employment edges must
+be forward:
+
+```
+class Company:  # entity_type: company
+    _id: str
+    name: str
+    sub_domain: str
+    headquarters: str
+    investors: List["InvestmentInstitution"]   # forward: company -> investor (required join)
+
+class Person:  # entity_type: person
+    _id: str
+    name: str
+    founded_companies: List["Company"]         # forward
+    previously_worked_at: List["Company"]      # forward
+
+class InvestmentInstitution:  # entity_type: investment_institution
+    _id: str
+    name: str
+    portfolio_companies: List["Company"]  # reverse   # mirror of Company.investors, optional
+```
+
+Here `Company.investors` is forward, so the company↔investor edge is
+materialized and "common investor" is queryable.
+
 ## Cost Rules
 
 - Prefer the evidence manifest and uploaded files.
