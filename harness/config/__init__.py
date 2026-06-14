@@ -8,7 +8,7 @@ from harness.config.schema import (
     SFTConfig,
     ToolsConfig,
 )
-from harness.config.loader import load_config
+from harness.config.loader import load_config, load_project_env
 
 __all__ = [
     "AgentConfig",
@@ -20,4 +20,5 @@ __all__ = [
     "SFTConfig",
     "ToolsConfig",
     "load_config",
+    "load_project_env",
 ]

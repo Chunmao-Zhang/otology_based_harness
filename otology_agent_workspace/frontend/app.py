@@ -329,9 +329,18 @@ async def index():
 @app.get("/api/health")
 async def health():
     model_id = ""
+    api_key_present = False
+    serper_key_present = False
     try:
-        cfg = read_json(ROOT / "harness.json")
-        model_id = str(cfg.get("defaults", {}).get("model", ""))
+        from harness.config import load_config
+        from harness.agents.registry import AgentRegistry
+
+        cfg = load_config(str(ROOT / "harness.json"))
+        registry = AgentRegistry(cfg)
+        agent_cfg = registry.get(AGENT_ID)
+        model_id = agent_cfg.model.model_id if agent_cfg.model else ""
+        api_key_present = bool(agent_cfg.model and agent_cfg.model.api_key)
+        serper_key_present = bool(os.environ.get("SERPER_API_KEY"))
     except Exception:
         pass
     return {
@@ -339,6 +348,8 @@ async def health():
         "brand": UI_BRAND,
         "agent": AGENT_ID,
         "model": model_id,
+        "api_key_present": api_key_present,
+        "serper_key_present": serper_key_present,
         "upload_count": total_upload_count(),
     }
 

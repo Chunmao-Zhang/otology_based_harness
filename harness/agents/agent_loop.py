@@ -196,6 +196,12 @@ def _build_model(model_cfg: ModelConfig) -> ChatOpenAI:
     provider's workaround to unrelated OpenAI-compatible endpoints.
     """
     model_cls = _model_wrapper(model_cfg)
+    if not model_cfg.api_key:
+        raise ValueError(
+            f"Missing API key for provider '{model_cfg.provider}'. "
+            "Set it in .env.example next to harness.json, for example "
+            f"{model_cfg.provider.upper()}_API_KEY=..."
+        )
     timeout = float(os.environ.get("HARNESS_MODEL_TIMEOUT_SECONDS", "180"))
     kwargs = {}
     if model_cfg.response_format:

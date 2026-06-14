@@ -23,15 +23,35 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+CONFIG_PATH_FOR_COMPAT = Path(os.environ.get("HARNESS_CONFIG", ROOT / "harness.json")).expanduser()
+if CONFIG_PATH_FOR_COMPAT.exists():
+    try:
+        config_preview = json.loads(CONFIG_PATH_FOR_COMPAT.read_text(encoding="utf-8"))
+    except Exception:
+        config_preview = {}
+    configured_agent_ids = {agent.get("id") for agent in config_preview.get("agents", []) if isinstance(agent, dict)}
+    if "deepagents_kbqa_general" not in configured_agent_ids:
+        from harness.web_ui.app import main as ontology_ui_main
+
+        if __name__ == "__main__":
+            ontology_ui_main()
+            raise SystemExit(0)
+        raise RuntimeError(
+            "frontend/app.py is the legacy deepagents_kbqa_general UI, but this "
+            "checkout is configured for the ontology harness. Run "
+            "`python3 -m harness.web_ui` instead."
+        )
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 
 
-ROOT = Path(__file__).resolve().parents[3]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 from harness.agents.agent_loop import _load_prompt, _resolve_path, build_agent

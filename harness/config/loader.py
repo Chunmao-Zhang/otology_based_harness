@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,42 @@ from harness.config.schema import (
 )
 
 
+def load_env_file(path: str | Path, *, override: bool = False) -> None:
+    """Load a small POSIX-style .env file if it exists.
+
+    The project intentionally avoids requiring python-dotenv. This parser covers
+    the common KEY=value / export KEY=value forms used by the local launchers.
+    Existing environment variables win by default.
+    """
+
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        if not override and key in os.environ:
+            continue
+        value = value.strip()
+        if value:
+            try:
+                parts = shlex.split(value, posix=True)
+                value = parts[0] if parts else ""
+            except ValueError:
+                value = value.strip('"').strip("'")
+        os.environ[key] = value
+
+
 def _resolve_env(value: str) -> str:
     """替换 ${ENV_VAR} 占位符为环境变量值。未解析的占位符返回空串，避免把
     形如 "${DEEPSEEK_API_KEY}" 的字面量当成真实密钥使用。"""
@@ -37,6 +74,19 @@ def _resolve_env(value: str) -> str:
         value,
     )
     return resolved
+
+
+def load_project_env(config_path: str | Path) -> None:
+    """Load project-local environment configuration for a harness config file.
+
+    This project keeps runtime keys in `.env.example` by convention. A local
+    `.env` may still be present for developer overrides, and exported shell
+    variables always take highest precedence.
+    """
+
+    config_dir = Path(config_path).resolve().parent
+    load_env_file(config_dir / ".env.example")
+    load_env_file(config_dir / ".env")
 
 
 def _parse_providers(data: dict[str, Any] | None) -> dict[str, ProviderConfig]:
@@ -177,6 +227,8 @@ def load_config(config_path: str | Path) -> HarnessConfig:
     config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
+
+    load_project_env(config_path)
 
     with open(config_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
