@@ -1160,20 +1160,25 @@ def run_segment_solve(
     problem: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
 ) -> str:
     """Segment 3: extract + solve against the human-confirmed schema, then answer."""
+    vrun = vrun_for(run_dir)
     confirmed = run_dir / "concepts" / "confirmed_schema.py"
     try:
         outline = schema_outline(str(confirmed)) if confirmed.exists() else []
     except Exception:
         outline = []
+    # Subagent file tools resolve paths under the harness root via the virtual
+    # /runs/... namespace, so every path handed to the coordinator must be the
+    # virtual root-relative path — never the absolute on-disk path (which the
+    # tools would re-root, nesting it under the harness root).
     message = _segment_message_solve(
         problem,
         upload_paths,
-        vrun_for(run_dir),
+        vrun,
         run_dir.name,
-        str(confirmed),
+        f"{vrun}/concepts/confirmed_schema.py",
         outline,
-        str(run_dir / "intermediate" / "evidence_manifest.json"),
-        str(run_dir / "data" / "instances.json"),
+        f"{vrun}/intermediate/evidence_manifest.json",
+        f"{vrun}/data/instances.json",
     )
     return _drive_coordinator(message, thread_id, run_dir, emit)
 
