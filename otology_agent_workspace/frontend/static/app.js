@@ -98,20 +98,38 @@
   const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', icon: '◉' };
   const SUBAGENT_ORDER = ['clarify', 'evidence', 'schema_build', 'schema_judge', 'extract', 'solve'];
   const STAGE_AGENTS = {
-    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', icon: '◇' },
-    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', icon: '◈' },
-    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    icon: '▦' },
-    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     icon: '§' },
-    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    icon: '⛏' },
-    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  icon: 'ƒ' },
+    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', short: 'Clarifier', icon: '◇' },
+    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', short: 'Evidence', icon: '◈' },
+    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    short: 'Builder',   icon: '▦' },
+    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     short: 'Judger',    icon: '§' },
+    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    short: 'Extractor', icon: '⛏' },
+    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  short: 'Solver',    icon: 'ƒ' },
   };
   function stageAgent(stageId) {
     return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', icon: '●' };
   }
+
+  // Clean line-icon glyphs (Feather/Lucide style) for the coordinator and each
+  // subagent, injected as inline SVG so they inherit the surrounding color via
+  // `currentColor`. Replaces the old unicode glyphs.
+  const AGENT_ICON_PATHS = {
+    __coordinator__: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
+    clarify: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    evidence: '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+    schema_build: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>',
+    schema_judge: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+    extract: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
+    solve: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  };
+  function agentIconSvg(key) {
+    const paths = AGENT_ICON_PATHS[key] || '<circle cx="12" cy="12" r="9"/>';
+    return `<svg class="agent-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  }
+
   function agentBadgeHtml(stageId) {
     const a = stageAgent(stageId);
     return `<span class="agent-badge subagent" title="Subagent · ${escapeHtml(a.label)}">
-        <span class="agent-badge-glyph">${escapeHtml(a.icon)}</span>
+        <span class="agent-badge-glyph">${agentIconSvg(stageId)}</span>
         <span class="agent-badge-text"><span class="agent-badge-kind">Subagent</span><span class="agent-badge-name">${escapeHtml(a.label)}</span></span>
       </span>`;
   }
@@ -124,8 +142,8 @@
       const cls = status === 'done' ? 'done' : (status === 'running' ? 'running' : (status === 'waiting' ? 'waiting' : 'pending'));
       const dot = status === 'done' ? '✓' : (status === 'running' ? '●' : '');
       return `<span class="deleg-chip ${cls}${live ? ' live' : ''}" title="${escapeHtml(a.label)} · ${escapeHtml(status)}">
-          <span class="deleg-chip-glyph">${escapeHtml(a.icon)}</span>
-          <span class="deleg-chip-name">${escapeHtml(a.label)}</span>
+          <span class="deleg-chip-glyph">${agentIconSvg(id)}</span>
+          <span class="deleg-chip-name">${escapeHtml(a.short || a.label)}</span>
           <span class="deleg-chip-dot">${dot}</span>
         </span>`;
     }).join('<span class="deleg-arrow" aria-hidden="true">→</span>')}</div>`;
@@ -145,7 +163,7 @@
     return `
       <div class="coordinator-banner${orchestrating ? ' active' : ''}">
         <div class="coordinator-head">
-          <div class="coordinator-avatar">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
+          <div class="coordinator-avatar">${agentIconSvg(COORDINATOR_LANE)}</div>
           <div class="coordinator-meta">
             <span class="coordinator-kind">Lead Agent</span>
             <div class="coordinator-title">
@@ -934,7 +952,7 @@
         <div class="onto-attr-edit">
           <input class="onto-attr-input" data-index="${entityIndex}" data-attr="${ai}" value="${escapeHtml(attrName(a))}" placeholder="attribute">
           <select class="onto-attr-type" data-index="${entityIndex}" data-attr="${ai}">${typeOpts}</select>
-          <label class="onto-attr-optional" title="Mark this attribute optional"><input type="checkbox" class="onto-attr-opt" data-index="${entityIndex}" data-attr="${ai}"${a.optional ? ' checked' : ''}>opt</label>
+          <label class="onto-attr-optional" title="Optional — when checked, this attribute may be missing on some entities (written as Optional[...] in the schema). Leave unchecked to require it on every entity."><input type="checkbox" class="onto-attr-opt" data-index="${entityIndex}" data-attr="${ai}"${a.optional ? ' checked' : ''}>opt</label>
           <button type="button" class="onto-attr-del" data-index="${entityIndex}" data-attr="${ai}" title="Remove attribute" aria-label="Remove attribute">×</button>
         </div>`;
     }).join('');
@@ -1033,7 +1051,7 @@
           : 'Schema analysis is complete.');
       return `${analysisCompleteHtml(detail)}${schemaPreviewTablesHtml()}${schemaReviewActionsHtml()}`;
     }
-    return `${formatMarkdown(message.content)}${gateActions(message)}`;
+    return `${formatMarkdown(message.content)}${reportDownloadHtml(message)}${gateActions(message)}`;
   }
 
   function stageById(stageId) {
@@ -1259,7 +1277,7 @@
           <div class="run-card ontology-task-card complete">
             <div class="run-card-head completed-task-head">
               <div class="task-node-title">
-                <span class="run-check">✓</span>
+                <span class="task-node-lead"><span class="run-check">✓</span></span>
                 ${agentBadgeHtml(card.id)}
                 <span class="task-node-stage">${escapeHtml(card.title)}</span>
               </div>
@@ -1281,7 +1299,7 @@
         <div class="run-card ontology-task-card working">
           <div class="run-card-head">
             <div class="task-node-title">
-              <span class="${isWaiting ? 'run-check' : 'run-pulse'}">${isWaiting ? '✓' : ''}</span>
+              <span class="task-node-lead"><span class="${isWaiting ? 'run-check' : 'run-pulse'}">${isWaiting ? '✓' : ''}</span></span>
               ${agentBadgeHtml(card.id)}
               <span class="task-node-stage">${escapeHtml(card.title)}</span>
               <span class="task-node-working">${workingLabel}</span>
@@ -1351,7 +1369,7 @@
     const barHead = `
       <div class="stage-group-bar-head">
         <span class="stage-group-summary-title">
-          <span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span>
+          <span class="coordinator-pill"><span class="coordinator-pill-glyph">${agentIconSvg(COORDINATOR_LANE)}</span>Coordinator</span>
           <span class="run-check">✓</span> Orchestrated ${cards.length} ${stepWord}
         </span>
         <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
@@ -1593,9 +1611,9 @@
       if (message.role === 'assistant') {
         return `
           <article class="message assistant">
-            <div class="avatar coordinator-answer-avatar" title="Coordinator">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
+            <div class="avatar coordinator-answer-avatar" title="Coordinator">${agentIconSvg(COORDINATOR_LANE)}</div>
             <div class="bubble">
-              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span><span class="coordinator-answer-note">Final answer synthesized from all subagent results</span></div>
+              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${agentIconSvg(COORDINATOR_LANE)}</span>Coordinator</span><span class="coordinator-answer-note">Final answer synthesized from all subagent results</span></div>
               ${renderAssistantContent(message)}
             </div>
           </article>
@@ -1658,6 +1676,12 @@
     });
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openSchemaModal());
+    });
+    el.messages.querySelectorAll('[data-action="download-report"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const message = state.messages.find((item) => item.id === button.getAttribute('data-message-id'));
+        if (message) downloadReport(message.content);
+      });
     });
     // Skip syntax highlighting while a run streams: the live output pane is
     // rendered without Prism anyway, and re-highlighting the whole transcript on
@@ -1811,6 +1835,42 @@
         ${downloadPill('facts', 'facts.csv', 'attributes')}
         ${downloadPill('relations_data', 'relations.csv', 'edges')}
         ${downloadPill('instances', 'instances.json', 'raw')}
+      </div>`;
+  }
+
+  // A final synthesized answer is "report-like" when it is substantial or carries
+  // Markdown structure (headings / tables / lists). Only those get a download
+  // button so short conversational replies stay uncluttered.
+  function isReportLike(content) {
+    const text = (content || '').trim();
+    if (text.length >= 320) return true;
+    return /(^|\n)\s{0,3}#{1,6}\s|\n\s*[-*]\s|\n\s*\d+\.\s|\n\s*\|.*\|/.test(text);
+  }
+  // Client-side download of the report Markdown — avoids a server round-trip
+  // since the full content is already in the message.
+  function downloadReport(content) {
+    const text = (content || '').trim();
+    if (!text) return;
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '').replace(/(\d{8})(\d{6})/, '$1-$2');
+    const blob = new Blob([text + '\n'], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `report-${stamp}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function reportDownloadHtml(message) {
+    if (!message || message.clarification || isSchemaReviewMessage(message)) return '';
+    if (!isReportLike(message.content)) return '';
+    return `
+      <div class="report-download-row" role="group" aria-label="Download this report">
+        <button type="button" class="report-download-btn" data-action="download-report" data-message-id="${escapeHtml(message.id)}">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Download report (.md)</span>
+        </button>
       </div>`;
   }
 
@@ -2098,14 +2158,14 @@
       <div class="onto-table-block">
         <div class="onto-table-head"><h4>Entity Definitions</h4>${editable ? '<button type="button" class="onto-add-row" data-add="entity">+ Add entity</button>' : ''}</div>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <thead><tr><th class="onto-col-entity">Entity Type</th><th class="onto-col-dtype">Entity Data Type</th><th>Attributes</th>${editable ? '<th class="onto-col-action" aria-label="Actions"></th>' : ''}</tr></thead>
           <tbody>${entityRows || `<tr><td colspan="${entityCols}" class="onto-muted">No entities yet.</td></tr>`}</tbody>
         </table></div>
       </div>
       <div class="onto-table-block">
         <div class="onto-table-head"><h4>Relation Schema</h4>${editable ? '<button type="button" class="onto-add-row" data-add="relation">+ Add relation</button>' : ''}</div>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <thead><tr><th class="onto-col-rel">Head Entity Type</th><th class="onto-col-rel">Relation Type</th><th class="onto-col-rel">Tail Entity Type</th>${editable ? '<th class="onto-col-action" aria-label="Actions"></th>' : ''}</tr></thead>
           <tbody>${relationRows || `<tr><td colspan="${relationCols}" class="onto-muted">No relations yet.</td></tr>`}</tbody>
         </table></div>
       </div>

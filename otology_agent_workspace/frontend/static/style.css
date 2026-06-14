@@ -5769,6 +5769,15 @@ textarea#message-input.chat-input:focus-visible,
   cursor: default;
 }
 
+/* Fixed-width lead slot so the status indicator (pulse 8px / check 19px) never
+   shifts the badge — every subagent row's badge and stage title line up (#9). */
+.task-node-lead {
+  flex: 0 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .task-node-actions {
   display: inline-flex;
   align-items: center;
@@ -6309,6 +6318,31 @@ textarea#message-input.chat-input:focus-visible,
 .onto-schema-table .schema-attr-cell,
 .onto-schema-table td:last-child { word-break: break-word; }
 
+/* Keep the editable schema tables inside the modal instead of overflowing the
+   right edge (#1/#2/#6): fixed layout + wrapping cells + a narrow action col. */
+.onto-schema-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+.onto-schema-table th,
+.onto-schema-table td {
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+.onto-schema-table .onto-col-action,
+.onto-schema-table .onto-row-action { width: 46px; padding-left: 6px; padding-right: 6px; }
+.schema-entity-table .onto-col-entity { width: 23%; }
+.schema-entity-table .onto-col-dtype { width: 16%; }
+.schema-relation-table .onto-col-rel { width: 31%; }
+/* Inside the modal the tables now fit, so don't force a permanent scrollbar. */
+.schema-modal-body .md-table-wrap { overflow-x: auto; }
+.schema-modal-body .md-table th,
+.schema-modal-body .md-table td { min-width: 0; }
+
 .onto-upload-btn span {
   display: inline-flex;
   align-items: center;
@@ -6404,12 +6438,13 @@ textarea#message-input.chat-input:focus-visible,
 .onto-cell-select {
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M2.5 4.5 6 8l3.5-3.5z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 8px center;
-  padding-right: 26px;
+  background-position: right 9px center;
+  padding-right: 30px;
   cursor: pointer;
 }
+.onto-cell-select:hover { background-color: color-mix(in srgb, var(--accent) 5%, var(--panel-strong)); }
 
 .onto-cell-input:hover,
 .onto-cell-select:hover { border-color: var(--accent); }
@@ -6424,7 +6459,7 @@ textarea#message-input.chat-input:focus-visible,
 .onto-attr-cell { color: var(--ink-soft); font-size: 12.5px; }
 
 /* Editable attribute editor inside the schema modal */
-.onto-attr-editor { display: flex; flex-direction: column; gap: 6px; min-width: 280px; }
+.onto-attr-editor { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .onto-attr-edit {
   display: flex;
   align-items: center;
@@ -6432,7 +6467,7 @@ textarea#message-input.chat-input:focus-visible,
 }
 .onto-attr-edit .onto-attr-input {
   flex: 1 1 auto;
-  min-width: 90px;
+  min-width: 0;
   font: inherit;
   font-size: 12.5px;
   color: var(--ink);
@@ -6451,12 +6486,12 @@ textarea#message-input.chat-input:focus-visible,
   background: var(--panel-strong);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
-  padding: 5px 22px 5px 8px;
+  padding: 5px 26px 5px 8px;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M2.5 4.5 6 8l3.5-3.5z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 7px center;
+  background-position: right 8px center;
   cursor: pointer;
 }
 .onto-attr-edit .onto-attr-input:hover,
@@ -6578,27 +6613,28 @@ textarea#message-input.chat-input:focus-visible,
   gap: 4px;
   padding: 4px;
   border-radius: 999px;
-  background: var(--bg-soft);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 7%, var(--bg-soft));
+  border: 1px solid var(--line-strong);
   margin-bottom: 14px;
 }
 .schema-mode-btn {
   font: inherit;
   font-size: 12.5px;
-  font-weight: 600;
+  font-weight: 650;
   padding: 6px 16px;
   border-radius: 999px;
   border: none;
   background: transparent;
-  color: var(--ink-muted);
+  color: var(--ink-soft);
   cursor: pointer;
   transition: background .15s ease, color .15s ease, box-shadow .15s ease;
 }
-.schema-mode-btn:hover { color: var(--ink); }
-.schema-mode-btn.active {
-  background: var(--panel-strong);
-  color: var(--accent-strong);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, .12);
+.schema-mode-btn:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.schema-mode-btn.active,
+.schema-mode-btn.active:hover {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #fff;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 38%, transparent);
 }
 
 /* Suggest-to-agent mode */
@@ -6935,6 +6971,35 @@ textarea#message-input.chat-input:focus-visible,
 .schema-download-row.compact {
   margin: 8px 0 12px;
 }
+
+/* Download button under a final report (#11). */
+.report-download-row {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line-strong);
+}
+.report-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--line));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 82%, var(--panel-strong)), var(--panel-strong));
+  color: var(--accent-strong);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, .1);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.report-download-btn:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  box-shadow: 0 8px 20px rgba(37, 99, 235, .18);
+}
+.report-download-btn svg { flex: none; }
 
 /* ── Right panel intro header ─────────────────────────────────────── */
 .panel-intro {
@@ -7333,14 +7398,30 @@ body.dark-theme .pretty-code {
 }
 
 .clarify-modal-close {
-  width: 34px;
-  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
   border-radius: 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--panel-strong);
-  color: var(--ink-muted);
+  color: var(--ink-soft);
   font-size: 20px;
+  line-height: 1;
   cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
+}
+.clarify-modal-close:hover {
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel-strong));
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.clarify-modal-close:active { transform: scale(.94); }
+.clarify-modal-close:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .clarify-modal-form {
@@ -7985,17 +8066,24 @@ body.modal-open { overflow: hidden; }
 
 /* Delegation chip row: the six subagents the coordinator can call, with the
    currently active one highlighted. */
+/* The delegation chain stays on a single row (#7): never wrap and never scroll.
+   The chips share the available width and shrink to fit so all six are always
+   visible at once; an over-long name ellipsizes (full name stays in the title). */
 .deleg-chip-row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   margin-top: 12px;
+  min-width: 0;
+  width: 100%;
 }
 .deleg-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 5px;
   padding: 5px 9px;
   border-radius: 999px;
   border: 1px solid var(--line);
@@ -8003,13 +8091,23 @@ body.modal-open { overflow: hidden; }
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink-muted);
+  justify-content: center;
   transition: background .2s ease, color .2s ease, border-color .2s ease, transform .2s ease;
 }
 .deleg-chip-glyph {
-  font-size: 12px;
-  opacity: 0.8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  opacity: 0.85;
 }
-.deleg-chip-dot { font-size: 10px; line-height: 1; }
+.deleg-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deleg-chip-dot { flex: 0 0 auto; font-size: 10px; line-height: 1; }
 .deleg-chip.done {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 32%, transparent);
@@ -8030,10 +8128,11 @@ body.modal-open { overflow: hidden; }
 }
 .deleg-chip.live .deleg-chip-dot { animation: coordPulse 1.4s ease-out infinite; }
 .deleg-arrow {
+  flex: 0 0 auto;
   color: var(--ink-muted);
-  font-size: 12px;
-  opacity: 0.55;
-  padding: 0 1px;
+  font-size: 11px;
+  opacity: 0.5;
+  padding: 0;
 }
 
 .coordinator-narration {
@@ -8080,12 +8179,16 @@ body.modal-open { overflow: hidden; }
 .agent-badge.subagent {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 9px;
+  width: 190px;
+  box-sizing: border-box;
   padding: 5px 13px 5px 5px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   background: var(--accent-soft);
   vertical-align: middle;
+  overflow: hidden;
 }
 .agent-badge-glyph {
   flex: none;
@@ -8102,6 +8205,7 @@ body.modal-open { overflow: hidden; }
   display: inline-flex;
   flex-direction: column;
   justify-content: center;
+  min-width: 0;
   gap: 2px;
   line-height: 1.15;
 }
@@ -8116,6 +8220,10 @@ body.modal-open { overflow: hidden; }
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .task-node-stage {
@@ -8145,7 +8253,16 @@ body.modal-open { overflow: hidden; }
   padding: 3px 9px 3px 6px;
   border-radius: 999px;
 }
-.coordinator-pill-glyph { font-size: 12px; }
+.coordinator-pill-glyph { display: inline-flex; align-items: center; justify-content: center; }
+
+/* Inline SVG agent icons (replaced the old unicode glyphs): inherit color via
+   currentColor and are sized per container (#8). */
+.agent-icon { display: block; width: 16px; height: 16px; flex: none; }
+.coordinator-avatar .agent-icon { width: 22px; height: 22px; }
+.coordinator-answer-avatar .agent-icon { width: 20px; height: 20px; }
+.agent-badge-glyph .agent-icon { width: 16px; height: 16px; }
+.deleg-chip-glyph .agent-icon { width: 14px; height: 14px; }
+.coordinator-pill-glyph .agent-icon { width: 13px; height: 13px; }
 
 .coordinator-answer-avatar {
   color: #fff !important;
