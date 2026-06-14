@@ -42,20 +42,36 @@ Return only valid JSON:
 {
   "schema_text": "from typing import List, Optional\n\nclass ...",
   "valid": true,
-  "errors": []
+  "errors": [],
+  "confirmed_schema_path": "<the confirmed_schema_path returned by save_schema>",
+  "schema_outline": "<the schema_outline returned by save_schema>"
 }
 ```
 
-`schema_text` must be the full Python schema source. The harness/backend writes
-it to `concepts/draft_schema.py` and revalidates, so you do not need a
-file-writing tool. `valid`/`errors` must reflect the latest `schema_validator`
-result on that exact text.
+`schema_text` must be the full Python schema source. You persist it yourself by
+calling `save_schema(schema_text=...)` (see Persistence below); copy the
+`confirmed_schema_path` and `schema_outline` it returns into your output.
+`valid`/`errors` must reflect the latest `schema_validator` result on that exact
+text.
 
 ## Allowed Tools
 
 - `source_reader`
 - `evidence_retriever`
 - `schema_validator`
+- `save_schema`
+
+## Persistence
+
+After `schema_validator` reports your `schema_text` is valid, call
+`save_schema(schema_text="<your full schema source>")` exactly once as your final
+tool call. It validates the schema, persists `concepts/draft_schema.py` and
+`concepts/confirmed_schema.py`, builds the workspace skeleton, and returns
+`{"ok": true, "confirmed_schema_path": "...", "schema_outline": [...]}`. If it
+returns `"ok": false`, repair the schema from the returned `errors` and call
+`save_schema` again. Put the returned `confirmed_schema_path` and
+`schema_outline` in your output JSON. Do not write any schema file with another
+tool.
 
 ## Schema Rules
 
@@ -121,6 +137,6 @@ materialized and "common investor" is queryable.
 ## Boundaries
 
 - Do not extract instances.
-- Do not write `confirmed_schema.py`.
+- Persist the schema only through `save_schema`; never use any other file tool.
 - Do not answer the final user question.
 - Output no markdown, no commentary, no extra keys.

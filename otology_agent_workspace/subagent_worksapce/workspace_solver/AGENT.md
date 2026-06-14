@@ -36,13 +36,30 @@ Return a concise answer with:
      `data/facts.csv`, `data/relations.csv`.
    - Apply every constraint in the question by traversing those structures
      (filter rows, join on `_id`, intersect relation edges, etc.).
-   - `print` the JSON result.
-   - Write `<workspace_dir>/intermediate/solver_result.json` containing
-     `{"ok": true, "answer": "...", "result": ...}`.
+   - Build `result` as the list of matching rows (each a dict of the fields the
+     question asks to output). `answer` is a one-sentence Chinese summary.
+   - End with exactly this persistence block (the keys `ok`, `answer`, `result`
+     are mandatory — never rename them, never omit `ok`):
+
+   ```python
+   import json, os
+   out = {"ok": True, "answer": answer, "result": result}
+   os.makedirs(os.path.dirname(SOLVER_RESULT_PATH), exist_ok=True)
+   with open(SOLVER_RESULT_PATH, "w", encoding="utf-8") as f:
+       json.dump(out, f, ensure_ascii=False, indent=2)
+   print(json.dumps(out, ensure_ascii=False))
+   ```
+
+   where `SOLVER_RESULT_PATH = "<workspace_dir>/intermediate/solver_result.json"`.
 2. Execute it once with
    `execute_code(file_path="/runs/ontology_workspace_runs/<run_id>/src/solve.py", script_args="")`.
 3. If—and only if—execution raises an error, fix `solve.py` and run it one more
    time. You get at most one fix. Do not write throwaway exploration scripts.
+
+The persisted `solver_result.json` MUST be a single object whose top-level keys
+are exactly `ok` (true), `answer` (string), and `result` (a JSON list of the
+matching rows). Any other shape (e.g. `matches`, `reasoning`, or a missing `ok`)
+is a contract failure.
 
 You must not give the final answer before running code from `<workspace_dir>/src/`.
 

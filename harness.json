@@ -16,7 +16,7 @@
       "api_key": "a5699d2fdabc196a22b19853e4f69c0234d918b3",
       "default_num_results": 3,
       "max_results_per_call": 3,
-      "max_searches_per_run": 8
+      "max_searches_per_run": 16
     }
   },
   "defaults": {
@@ -61,10 +61,19 @@
           "execute",
           "ls",
           "glob",
-          "grep"
+          "grep",
+          "write_todos",
+          "source_reader",
+          "evidence_retriever",
+          "schema_validator",
+          "web_search",
+          "save_evidence_manifest",
+          "save_schema",
+          "get_schema_outline",
+          "build_dataset"
         ]
       },
-      "description": "Orchestrates ontology-centered question answering with explicit confirmation gates.",
+      "description": "Orchestrates ontology QA end to end by delegating to subagent LLMs with the task tool. No state machine, no fallbacks.",
       "default": true
     },
     {
@@ -90,7 +99,8 @@
           "write_todos",
           "source_reader",
           "web_search",
-          "evidence_retriever"
+          "evidence_retriever",
+          "save_evidence_manifest"
         ],
         "deny": [
           "execute",
@@ -98,7 +108,7 @@
           "grep"
         ]
       },
-      "description": "Reads uploads and controlled web evidence into an evidence manifest."
+      "description": "Reads uploads and controlled web evidence, then persists the evidence manifest with save_evidence_manifest."
     },
     {
       "id": "schema_builder",
@@ -109,7 +119,8 @@
         "allow": [
           "source_reader",
           "evidence_retriever",
-          "schema_validator"
+          "schema_validator",
+          "save_schema"
         ],
         "deny": [
           "execute",
@@ -117,7 +128,7 @@
           "grep"
         ]
       },
-      "description": "Builds and validates a draft ontology schema from evidence."
+      "description": "Builds and validates the ontology schema, then persists it with save_schema."
     },
     {
       "id": "schema_judger",
@@ -142,7 +153,9 @@
           "write_file",
           "source_reader",
           "web_search",
-          "evidence_retriever"
+          "evidence_retriever",
+          "get_schema_outline",
+          "build_dataset"
         ],
         "deny": [
           "execute",
@@ -150,7 +163,7 @@
           "grep"
         ]
       },
-      "description": "Extracts instances, facts, and relations according to a confirmed schema."
+      "description": "Extracts instances into instances.json, then derives the dataset with build_dataset."
     },
     {
       "id": "workspace_solver",
