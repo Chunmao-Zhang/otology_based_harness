@@ -1,7 +1,7 @@
 from typing import List
 
 
-class Company:  # entity_type: Organization
+class Company:
     _id: str
     name: str
     headquartered_in: List["Country"]

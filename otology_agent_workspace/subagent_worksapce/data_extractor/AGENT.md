@@ -21,57 +21,95 @@ Your entire assistant message must be one JSON object.
 {
   "schema_path": ".../confirmed_schema.py",
   "instances_path": ".../data/instances.json",
-  "schema_outline": [
-    {"concept": "<EntityClassName>", "primitive_fields": ["..."], "relation_fields": [{"name": "...", "target": "..."}]}
-  ],
+  "schema_outline": {
+    "entity_types": [
+      {"entity_type": "<ClassName>", "entity_data_type": "str",
+       "attributes": [{"attribute": "<name>", "attribute_data_type": "str"}]}
+    ],
+    "relations": [
+      {"head_entity_type": "<ClassName>", "relation_type": "<name>", "tail_entity_type": "<ClassName>"}
+    ]
+  },
   "sources": [],
   "evidence_manifest_path": "..."
 }
 ```
 
-A `correction` object may also be present on a retry; when it is, obey it
-exactly and rewrite `instances.json` to match the listed `required_concepts`.
+`schema_outline` lists the exact `entity_type`, `attribute`, and `relation_type`
+names you must use verbatim. A `correction` object may also be present on a
+retry; when it is, obey it exactly and rewrite `instances.json` to fix the listed
+problems.
 
 ## Required Flow
 
 1. Read the confirmed schema and the evidence manifest. If the input has no
-   `schema_outline`, call `get_schema_outline()` to obtain the exact class and
-   field names.
-2. Build the instances collection: one key per entity class in `schema_outline`,
-   each mapping to a list of instance objects. Use the `concept` names and
-   `primitive_fields`/`relation_fields` from `schema_outline` verbatim as the
-   JSON keys — do not rename, translate, or invent keys.
+   `schema_outline`, call `get_schema_outline()` to obtain the exact
+   entity_type / attribute / relation_type names.
+2. Build the **two-section** instances object (see Instance Object Shape): an
+   `entities` list and a `relations` list. Use the `entity_type`, `attribute`,
+   and `relation_type` names from `schema_outline` verbatim — do not rename,
+   translate, or invent names. Do not key the object by class name and do not
+   put `_id` on any instance.
 3. Write it to the run's `data/instances.json` with `write_file` (use the
    `instances_path` from the input when provided). Write the complete, final
-   collection to that exact path in a single `write_file` call. `write_file`
+   object to that exact path in a single `write_file` call. `write_file`
    cannot overwrite an existing file, so get it right in one write: never write
    a partial or placeholder `instances.json` first. If you discover a mistake
    after `instances.json` already exists, write the COMPLETE corrected
-   collection to `data/instances_final.json` in a single `write_file` call
+   object to `data/instances_final.json` in a single `write_file` call
    (`build_dataset` then uses that corrected file). Never write empty lists.
 4. Call `build_dataset()` (no arguments). It validates your instances against
    the confirmed schema and, if they conform, derives `data/facts.csv`,
    `data/relations.csv`, and `intermediate/extraction_report.json`, returning
    `{"ok": true, "report": {...}}`. If it returns `{"ok": false, "validation":
-   {...}}`, fix the mismatched concepts/fields it lists, write the COMPLETE
-   corrected collection to `data/instances_final.json`, and call `build_dataset()`
-   again until it returns `"ok": true`.
+   {...}, "format": "..."}`, read the `validation.errors` and the `format` block,
+   fix the listed problems, write the COMPLETE corrected object to
+   `data/instances_final.json`, and call `build_dataset()` again until it returns
+   `"ok": true`.
 5. Return the output JSON below, using the counts and report from `build_dataset`.
 
 ## Instance Object Shape
 
-Each instance object must use:
+`data/instances.json` is ONE object with two sections, `entities` and
+`relations`:
 
 ```json
 {
-  "_id": "<stable id used by relations>",
-  "_concept": "<EntityClassName>",
-  "<primitive_field>": "<value>",
-  "<relation_field>": ["<target _id>"],
-  "source_refs": ["<source_id>"],
-  "confidence": 0.9
+  "entities": [
+    {
+      "entity_name": "Geoffrey Hinton",
+      "entity_type": "Person",
+      "attributes": {"name": "Geoffrey Hinton", "born_year": 1947},
+      "source_refs": ["web_001"],
+      "confidence": 0.95
+    }
+  ],
+  "relations": [
+    {
+      "head_entity_name": "Geoffrey Hinton",
+      "head_entity_type": "Person",
+      "relation_type": "works_at",
+      "tail_entity_name": "University of Toronto",
+      "tail_entity_type": "Organization",
+      "source_refs": ["web_004"],
+      "confidence": 0.9
+    }
+  ]
 }
 ```
+
+Format rules:
+
+- Each entity has `entity_name`, `entity_type` (a declared class), and an
+  `attributes` object whose keys are declared attributes of that class. Attribute
+  values must match the declared `attribute_data_type` (an `int` attribute gets a
+  number like `1947`, not prose). Do **not** put `_id` on instances.
+- `(entity_name, entity_type)` is the composite key and must be **unique** across
+  `entities` — never emit the same name+type twice.
+- Each relation uses `head_entity_name` / `head_entity_type` / `relation_type` /
+  `tail_entity_name` / `tail_entity_type`, all declared in the schema. **Both**
+  endpoints must already exist as objects in `entities`.
+- Put `source_refs` (registered evidence ids) and `confidence` on every record.
 
 ## Output JSON
 
@@ -80,7 +118,8 @@ Return only valid JSON:
 ```json
 {
   "instances_path": ".../data/instances.json",
-  "instance_counts": {"<EntityClassName>": 0},
+  "entity_counts": {"<EntityType>": 0},
+  "relation_count": 0,
   "build_ok": true
 }
 ```
@@ -96,12 +135,11 @@ Return only valid JSON:
 
 ## Rules
 
-- Use only the confirmed schema. The top-level keys in `instances.json` must be
-  the schema's entity class names; per-instance fields must be the schema's
-  declared fields.
-- Do not add fields that are not in the schema.
-- Relation field values are lists of `_id` strings that refer to existing
-  instances you also emit.
+- Use only the confirmed schema. Every `entity_type`, `attribute`, and
+  `relation_type` you emit must be declared in the schema.
+- Do not add attributes that are not in the schema. Do not put `_id` on instances.
+- Every relation endpoint must be an entity you also emit in `entities`, matched
+  by its `(entity_name, entity_type)` composite key.
 - Include `source_refs` and `confidence` where possible. `source_refs` must use
   the `source_id` values registered in the evidence manifest.
 
@@ -111,13 +149,13 @@ Return only valid JSON:
   surface token that happens to share the name. For example `sub_domain` means
   the company's business sub-domain (e.g. "数据分析", "云数据平台", "分析软件"),
   **not** a web/DNS domain like `databricks.com`.
-- Populate every declared forward relation field whenever the evidence supports
-  it. In particular, if the schema declares a company→investor relation
-  (e.g. `Company.investors`), fill it with the investor `_id`s that funded that
-  company, and emit the corresponding investor instances. Required relations the
-  question joins on must not be left empty when evidence exists for them.
-- Each relation value is a list of `_id`s of instances you also emit, so both
-  endpoints of every relation row exist in `instances.json`.
+- Populate every declared relation whenever the evidence supports it. In
+  particular, if the schema declares a company→investor relation
+  (e.g. `Company.investors`), emit one `relations` record per investor that
+  funded that company, and emit the corresponding investor entities. Required
+  relations the question joins on must not be left empty when evidence exists.
+- Both endpoints of every relation record must also appear as objects in the
+  `entities` list (matched by `(entity_name, entity_type)`).
 
 ## Extraction is comprehensive; filtering is the solver's job (critical)
 
@@ -142,8 +180,8 @@ silently makes the question unanswerable. Therefore:
 - Extract **every** entity the evidence supports that participates in the
   question's join — not a convenient subset. If the evidence names a founder's
   prior company (e.g. a person who left company B to found company A), create
-  **both** companies as instances and set `previously_worked_at` to the prior
-  company. Never leave `previously_worked_at` empty when the evidence names a
+  **both** companies as entities and emit a `previously_worked_at` relation
+  record to the prior company. Never omit that relation when the evidence names a
   prior employer.
 - For **every** company, include **every** investor the evidence names (not just
   one or two), and emit each as an `InvestmentInstitution` instance. A shared
@@ -163,12 +201,37 @@ silently makes the question unanswerable. Therefore:
   candidate companies with founders and investors, emit all 6 (plus their prior
   companies and investors), not a convenient subset.
 
-## Evidence Reuse and Supplementary Search
+## Collect the Full Data Here — Search Comprehensively (critical)
 
-- Read the evidence manifest first and reuse its registered sources: uploads via `source_reader` / `evidence_retriever`, and persisted web evidence from the `evidence_path` files under `intermediate/web_evidence/`.
-- Do not repeat searches that `evidence_collector` already performed.
-- Call `web_search` only when a schema element has no supporting data in any registered source. Use at most one supplementary search call and at most 3 results.
-- The `web_search` tool persists each supplementary result automatically under `intermediate/web_evidence/`, continuing the `web_NNN` id sequence; you do not write those files yourself.
+You are the step that performs the **full** data collection. `evidence_collector`
+only verified that the schema is *obtainable* with a few probe searches; it
+deliberately did not gather everything. So most of the run's search budget is
+still available and is meant for you — use it to populate every schema element
+completely. Do not stop early ("浅尝辄止"); shallow extraction here is the main
+cause of incomplete answers.
+
+- Read the evidence manifest first and reuse its registered sources: uploads via
+  `source_reader` / `evidence_retriever`, and the persisted web evidence under
+  `intermediate/web_evidence/`. Reuse beats re-fetching, so start from what is
+  already there.
+- Then search the web as much as needed to **fully** populate the schema: issue
+  multiple, distinct, targeted `web_search` queries to cover every entity,
+  attribute, and relation the schema and question require. For a question about
+  one subject (e.g. a person's papers and activity over a decade), search each
+  facet separately — publications, awards, roles, affiliations, milestones by
+  period — rather than relying on a single query.
+- For multi-hop / join questions, search for **each** candidate entity and each
+  connecting fact (e.g. every company's investors, every founder's prior
+  employer), not just one or two. Missing one hop makes the answer unanswerable.
+- Don't needlessly repeat an identical query `evidence_collector` already ran if
+  its results are registered, but do go deeper and broader than the verification
+  pass did — that is exactly your job.
+- Use at most 3 results per search. The backend caps the total searches per run
+  (a budget shared with `evidence_collector`); spend the remaining budget here on
+  the highest-value distinct queries until the schema is fully populated.
+- The `web_search` tool persists each result automatically under
+  `intermediate/web_evidence/`, continuing the `web_NNN` id sequence; you do not
+  write those files yourself.
 
 ## Boundaries
 

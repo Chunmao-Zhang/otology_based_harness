@@ -67,6 +67,7 @@
     schema: null,
     schemaForm: [],
     schemaDirty: false,
+    schemaModalMode: 'table',
     panelTab: 'evidence',
     isComposing: false,
     activeClarificationMessageId: '',
@@ -460,6 +461,20 @@
     return (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
   }
 
+  // Cap the live (streaming) reasoning/output that is re-rendered every frame.
+  // A single step's accumulated reasoning can grow to tens of KB; rebuilding
+  // that much innerHTML on each animation frame for the whole length of a long
+  // run pressures the renderer and, on the longest runs, can crash the tab. The
+  // live panes are ephemeral — only the most recent reasoning matters while a
+  // step streams — so we keep the tail and drop the older prefix. Completed
+  // steps collapse and do not show this text at all.
+  const LIVE_TEXT_CAP = 8000;
+  function clampLiveText(text) {
+    const str = String(text || '');
+    if (str.length <= LIVE_TEXT_CAP) return str;
+    return '…\n' + str.slice(str.length - LIVE_TEXT_CAP);
+  }
+
   // Incrementally update the live coordinator narration and the active subagent's
   // reasoning/output panes without rebuilding the whole message tree. Returns
   // false when the live group is not in the DOM yet so the caller can fall back
@@ -493,11 +508,36 @@
       if (!node) return;
       const data = live[stage] || {};
       const rEl = node.querySelector('.run-reasoning-output');
-      if (rEl) rEl.innerHTML = data.thinking ? escapeHtml(sanitizeDisplayText(data.thinking)) : '<span class="live-placeholder">Waiting for live model update…</span>';
+      if (rEl) rEl.innerHTML = data.thinking ? escapeHtml(sanitizeDisplayText(clampLiveText(data.thinking))) : '<span class="live-placeholder">Waiting for live model update…</span>';
       const oEl = node.querySelector('.run-model-output');
-      if (oEl) oEl.innerHTML = data.output ? formatMarkdown(data.output) : '<span class="live-placeholder">Waiting for model output…</span>';
+      if (oEl) oEl.innerHTML = data.output ? formatMarkdown(clampLiveText(data.output)) : '<span class="live-placeholder">Waiting for model output…</span>';
     });
     return true;
+  }
+
+  // Coalesce high-frequency live events (token streams + activity logs) into at
+  // most one DOM pass per animation frame. A single working segment can emit
+  // many hundreds of stream/activity events; rendering synchronously on each one
+  // starves the main thread so the page appears frozen until the run ends (and
+  // only a refresh, which rehydrates from `history`, shows the result). Bundling
+  // the work per frame keeps the UI responsive while the segment streams.
+  let liveFlushScheduled = false;
+  let pendingFullRender = false;
+  function flushLiveUpdates() {
+    liveFlushScheduled = false;
+    const full = pendingFullRender;
+    pendingFullRender = false;
+    if (full) {
+      renderMessages({ preserveScroll: true });
+    } else if (!updateLiveStreamDom()) {
+      renderMessages({ preserveScroll: true });
+    }
+  }
+  function scheduleLiveUpdate(fullRender) {
+    if (fullRender) pendingFullRender = true;
+    if (liveFlushScheduled) return;
+    liveFlushScheduled = true;
+    window.requestAnimationFrame(flushLiveUpdates);
   }
 
   function handleWsEvent(payload) {
@@ -571,15 +611,15 @@
           thinking: payload.thinking || '',
           output: payload.output || '',
         };
-        // Targeted in-place update; only fall back to a full render if the live
-        // group is not on screen yet.
-        if (!updateLiveStreamDom()) renderMessages({ preserveScroll: true });
+        // Coalesced targeted update (falls back to a full render inside the
+        // flush if the live group is not on screen yet).
+        scheduleLiveUpdate(false);
       }
       return;
     }
     if (payload.type === 'activity') {
       state.messages.push(payload.message);
-      renderMessages({ preserveScroll: true });
+      scheduleLiveUpdate(true);
       return;
     }
     if (payload.type === 'assistant_final') {
@@ -600,6 +640,7 @@
     }
     if (payload.type === 'run_done') {
       state.liveStream = {};
+      pendingFullRender = false;
       setRunning(false);
       stopHistoryPolling();
       renderMessages();
@@ -845,6 +886,17 @@
     };
   }
 
+  // Accessors that tolerate both the typed-triple form shape and any older
+  // cached shape (entity_type/name, entity_data_type/id_type, head_entity_type
+  // /head_entity, relation_type/relation, tail_entity_type/tail_entity).
+  function entityTypeOf(item) { return (item && (item.entity_type || item.name)) || ''; }
+  function entityDataTypeOf(item) { return (item && (item.entity_data_type || item.id_type)) || 'str'; }
+  function attrName(a) { return (a && (a.attribute || a.name)) || ''; }
+  function attrType(a) { return (a && (a.attribute_data_type || a.value_type)) || 'str'; }
+  function relHeadOf(item) { return (item && (item.head_entity_type || item.head_entity)) || ''; }
+  function relTailOf(item) { return (item && (item.tail_entity_type || item.tail_entity)) || ''; }
+  function relTypeOf(item) { return (item && (item.relation_type || item.relation)) || ''; }
+
   // Human-readable list of an entity's primitive attributes (the columns the
   // data extractor will fill). Keeps the schema cards honest: a class is never
   // just a name + type, it carries its real fields.
@@ -852,8 +904,41 @@
     const attrs = (item && item.attributes) || [];
     if (!attrs.length) return '';
     return attrs
-      .map((a) => `${a.name}${a.optional ? '?' : ''}: ${a.value_type || 'str'}`)
+      .map((a) => `${attrName(a)}${a.optional ? '?' : ''}: ${attrType(a)}`)
       .join(', ');
+  }
+
+  // Polished attribute chips for the schema tables (read-only view).
+  function attributesCellHtml(item) {
+    const attrs = (item && item.attributes) || [];
+    if (!attrs.length) return '<span class="onto-muted">—</span>';
+    return '<div class="onto-attr-chips">' + attrs.map((a) =>
+      `<span class="onto-attr-chip"><span class="ac-name">${escapeHtml(attrName(a))}${a.optional ? '?' : ''}</span><span class="ac-type">${escapeHtml(attrType(a))}</span></span>`
+    ).join('') + '</div>';
+  }
+
+  const ATTR_TYPES = ['str', 'int', 'float', 'bool'];
+
+  // Editable attribute editor for a draft entity: each attribute gets a name
+  // input, a data-type select, an "optional" toggle, and a delete control, plus
+  // an "+ Add attribute" button. `entityIndex` is the entity's position among
+  // the entity rows (matches how the change handlers look the entity back up).
+  function attributesEditHtml(item, entityIndex) {
+    const attrs = (item && item.attributes) || [];
+    const rows = attrs.map((a, ai) => {
+      const current = ATTR_TYPES.includes(attrType(a)) ? attrType(a) : 'str';
+      const typeOpts = ATTR_TYPES.map((opt) =>
+        `<option value="${opt}"${opt === current ? ' selected' : ''}>${opt}</option>`
+      ).join('');
+      return `
+        <div class="onto-attr-edit">
+          <input class="onto-attr-input" data-index="${entityIndex}" data-attr="${ai}" value="${escapeHtml(attrName(a))}" placeholder="attribute">
+          <select class="onto-attr-type" data-index="${entityIndex}" data-attr="${ai}">${typeOpts}</select>
+          <label class="onto-attr-optional" title="Mark this attribute optional"><input type="checkbox" class="onto-attr-opt" data-index="${entityIndex}" data-attr="${ai}"${a.optional ? ' checked' : ''}>opt</label>
+          <button type="button" class="onto-attr-del" data-index="${entityIndex}" data-attr="${ai}" title="Remove attribute" aria-label="Remove attribute">×</button>
+        </div>`;
+    }).join('');
+    return `<div class="onto-attr-editor">${rows}<button type="button" class="onto-attr-add" data-index="${entityIndex}">+ Add attribute</button></div>`;
   }
 
   function schemaPreviewTablesHtml() {
@@ -874,30 +959,20 @@
         </section>
       `;
     }
-    const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item) => `
       <tr>
-        <td>${escapeHtml(item.name)}</td>
-        <td>${escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.value_type || 'str')}</td>
-        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+        <td><span class="onto-entity-name">${escapeHtml(entityTypeOf(item))}</span></td>
+        <td><span class="onto-type-pill">${escapeHtml(entityDataTypeOf(item))}</span></td>
+        <td>${attributesCellHtml(item)}</td>
       </tr>
     `).join('');
-    const relationRows = relations.map((item) => {
-      const head = entityMeta.get(item.head_entity) || {};
-      const tail = entityMeta.get(item.tail_entity) || {};
-      return `
+    const relationRows = relations.map((item) => `
         <tr>
-          <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(head.entity_type || '')}</td>
-          <td>${escapeHtml(head.value_type || 'str')}</td>
-          <td>${escapeHtml(item.relation)}</td>
-          <td>${escapeHtml(item.tail_entity)}</td>
-          <td>${escapeHtml(tail.entity_type || '')}</td>
-          <td>${escapeHtml(tail.value_type || 'str')}</td>
+          <td>${escapeHtml(relHeadOf(item))}</td>
+          <td><span class="onto-rel-pill">${escapeHtml(relTypeOf(item))}</span></td>
+          <td>${escapeHtml(relTailOf(item))}</td>
         </tr>
-      `;
-    }).join('');
+      `).join('');
     return `
       <section class="schema-review-card">
         <div class="schema-review-head">
@@ -912,13 +987,13 @@
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+            <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-            <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-            <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+            <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th></tr></thead>
+            <tbody>${relationRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
           </table></div>
         </div>
       </section>
@@ -1058,8 +1133,8 @@
         if (stage.started_at) card.startedAt = stage.started_at;
         const live = (state.liveStream || {})[stage.id];
         if (live && stage.status !== 'done') {
-          if (live.thinking) card.thinking = normalizeActivityText(live.thinking);
-          if (live.output) card.output = normalizeActivityText(live.output);
+          if (live.thinking) card.thinking = normalizeActivityText(clampLiveText(live.thinking));
+          if (live.output) card.output = normalizeActivityText(clampLiveText(live.output));
         }
         return card;
       });
@@ -1381,6 +1456,35 @@
     }
   }
 
+  // Explicit schema-gate confirmation — uses a dedicated control message instead
+  // of free-text so the backend never has to guess intent from prose.
+  function sendSchemaConfirm() {
+    if (state.running) return;
+    const payload = { type: 'confirm_schema' };
+    state.forceScroll = true;
+    if (state.wsReady) {
+      setRunning(true, 'The agent is working on your request…');
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload, { optimistic: false });
+    }
+  }
+
+  // Second edit mode: hand a natural-language revision request to the agent,
+  // which re-runs the schema step (problem_clarifier / schema_builder) with it.
+  function sendSchemaRevision(instruction) {
+    const text = String(instruction || '').trim();
+    if (!text || state.running) return;
+    const payload = { type: 'revise_schema', instruction: text };
+    state.forceScroll = true;
+    if (state.wsReady) {
+      setRunning(true, 'The agent is revising the schema…');
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload, { optimistic: false });
+    }
+  }
+
   function renumberClarifyModalSteps() {
     if (!el.clarifyModalSteps) return;
     el.clarifyModalSteps.querySelectorAll('.clarify-step-no').forEach((badge, index) => {
@@ -1539,7 +1643,7 @@
       });
     });
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
-      button.addEventListener('click', () => sendQuickReply('Confirm'));
+      button.addEventListener('click', () => sendSchemaConfirm());
     });
     el.messages.querySelectorAll('[data-action="confirm-clarification-direct"]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -1555,7 +1659,11 @@
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openSchemaModal());
     });
-    if (window.Prism) window.Prism.highlightAllUnder(el.messages);
+    // Skip syntax highlighting while a run streams: the live output pane is
+    // rendered without Prism anyway, and re-highlighting the whole transcript on
+    // every coalesced frame is costly. The run_done / idle render highlights once
+    // the segment settles.
+    if (window.Prism && !state.running) window.Prism.highlightAllUnder(el.messages);
     if (shouldAutoScroll) {
       el.messages.scrollTop = el.messages.scrollHeight;
       scrollToLatestMessage('smooth');
@@ -1639,51 +1747,70 @@
 
   const PANEL_INTROS = {
     evidence: {
-      icon: '◈',
       kicker: 'Files & Evidence',
       title: 'Evidence for grounding',
       desc: 'Upload CSV / TXT / MD files and review the evidence manifest the agent collected. Everything the schema and answers are built from lives here.',
+      steps: ['Upload source files', 'Agent verifies coverage', 'Review the manifest'],
     },
     schema: {
-      icon: '▦',
       kicker: 'Schema Studio',
       title: 'Your ontology schema',
-      desc: 'Review the entities and relations the agent built, edit the draft, and download the schema or tables. The confirmed schema drives extraction and solving.',
+      desc: 'Review the entities and relations the agent built, edit the draft directly or ask the agent to revise it, then confirm. The confirmed schema drives extraction and solving.',
+      steps: ['Review entities & relations', 'Edit tables or ask the agent', 'Confirm to continue'],
     },
     progress: {
-      icon: '◎',
       kicker: 'Run & Results',
       title: 'Pipeline progress',
-      desc: 'Track the eight-stage ontology QA pipeline — from clarifying your question to the final grounded answer.',
+      desc: 'Track the ontology QA pipeline — from clarifying your question, through schema and data extraction, to the final grounded answer.',
+      steps: ['Clarify & confirm', 'Build schema & extract', 'Solve & answer'],
     },
   };
 
   function panelIntro(tab) {
     const intro = PANEL_INTROS[tab];
     if (!intro) return '';
+    const steps = (intro.steps || [])
+      .map((label, i) => `<span><strong>${i + 1}</strong>${escapeHtml(label)}</span>`)
+      .join('');
+    const stepsBlock = steps
+      ? `<div class="import-steps" aria-label="${escapeHtml(intro.kicker)} steps">${steps}</div>`
+      : '';
     return `
-      <div class="panel-intro">
-        <span class="panel-intro-icon" aria-hidden="true">${intro.icon}</span>
-        <div class="panel-intro-text">
-          <span class="panel-intro-kicker">${escapeHtml(intro.kicker)}</span>
-          <h2 class="panel-intro-title">${escapeHtml(intro.title)}</h2>
-          <p class="panel-intro-desc">${escapeHtml(intro.desc)}</p>
+      <div class="schema-hero refined-import-hero panel-hero">
+        <div>
+          <span class="schema-kicker">${escapeHtml(intro.kicker)}</span>
+          <h2>${escapeHtml(intro.title)}</h2>
+          <p>${escapeHtml(intro.desc)}</p>
         </div>
+        ${stepsBlock}
       </div>`;
   }
 
-  function schemaDownloadRow(compact) {
+  function downloadPill(kind, name, sub) {
     const sid = encodeURIComponent(state.sessionId);
-    const pill = (kind, name, sub) => `
+    return `
       <a class="download-pill ${kind}" href="/api/schema/download?session_id=${sid}&kind=${kind}" target="_blank" rel="noopener" download>
         <span class="dl-text"><span class="dl-name">${name}</span><small>${sub}</small></span>
       </a>`;
+  }
+
+  function schemaDownloadRow(compact) {
     return `
       <div class="schema-download-row${compact ? ' compact' : ''}" role="group" aria-label="Download the schema">
-        <span class="download-label">Downloads</span>
-        ${pill('python', 'Python schema', '.py source')}
-        ${pill('entities', 'Entity table', '.csv')}
-        ${pill('relations', 'Relation table', '.csv')}
+        <span class="download-label">Schema</span>
+        ${downloadPill('python', 'Python schema', '.py source')}
+        ${downloadPill('entities', 'Entity table', '.csv')}
+        ${downloadPill('relations', 'Relation table', '.csv')}
+      </div>`;
+  }
+
+  function dataDownloadRow() {
+    return `
+      <div class="schema-download-row compact" role="group" aria-label="Download the extracted data">
+        <span class="download-label">Data</span>
+        ${downloadPill('facts', 'facts.csv', 'attributes')}
+        ${downloadPill('relations_data', 'relations.csv', 'edges')}
+        ${downloadPill('instances', 'instances.json', 'raw')}
       </div>`;
   }
 
@@ -1802,30 +1929,20 @@
     }
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
-    const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item) => `
       <tr>
-        <td>${escapeHtml(item.name)}</td>
-        <td>${escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.value_type || 'str')}</td>
-        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+        <td><span class="onto-entity-name">${escapeHtml(entityTypeOf(item))}</span></td>
+        <td><span class="onto-type-pill">${escapeHtml(entityDataTypeOf(item))}</span></td>
+        <td>${attributesCellHtml(item)}</td>
       </tr>
     `).join('');
-    const relationRows = relations.map((item) => {
-      const head = entityMeta.get(item.head_entity) || {};
-      const tail = entityMeta.get(item.tail_entity) || {};
-      return `
+    const relationRows = relations.map((item) => `
         <tr>
-          <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(head.entity_type || '')}</td>
-          <td>${escapeHtml(head.value_type || 'str')}</td>
-          <td>${escapeHtml(item.relation)}</td>
-          <td>${escapeHtml(item.tail_entity)}</td>
-          <td>${escapeHtml(tail.entity_type || '')}</td>
-          <td>${escapeHtml(tail.value_type || 'str')}</td>
+          <td>${escapeHtml(relHeadOf(item))}</td>
+          <td><span class="onto-rel-pill">${escapeHtml(relTypeOf(item))}</span></td>
+          <td>${escapeHtml(relTailOf(item))}</td>
         </tr>
-      `;
-    }).join('');
+      `).join('');
     el.schemaContent.innerHTML = `
       ${panelIntro('schema')}
       <div class="onto-section">
@@ -1834,14 +1951,18 @@
           ${schemaDownloadRow(true)}
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+          <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
         <h4 class="onto-subhead">Relation Schema</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+          <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
+      </div>
+      <div class="onto-section" id="schema-data-section">
+        <div class="onto-section-head"><h3>Extracted Data</h3></div>
+        <div class="onto-empty">Loading the generated facts &amp; relations…</div>
       </div>
       <div class="onto-section">
         <div class="onto-section-head"><h3>Python View</h3></div>
@@ -1849,6 +1970,58 @@
       </div>
     `;
     if (window.Prism) window.Prism.highlightAllUnder(el.schemaContent);
+    loadSchemaDataSection();
+  }
+
+  // Renders a generated CSV as a polished, scrollable table.
+  function dataTableHtml(title, sub, kind, data) {
+    if (!data || !data.available) {
+      return `
+        <div class="onto-data-block">
+          <div class="onto-data-head"><h4>${title}</h4><span class="onto-data-count">not generated yet</span></div>
+          <div class="onto-empty">${sub} will appear here after the agent extracts the data.</div>
+        </div>`;
+    }
+    const cols = data.columns || [];
+    const rows = data.rows || [];
+    const head = `<tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr>`;
+    const body = rows.length
+      ? rows.map((row) => `<tr>${cols.map((_, i) => `<td title="${escapeHtml(String(row[i] ?? ''))}">${escapeHtml(String(row[i] ?? ''))}</td>`).join('')}</tr>`).join('')
+      : `<tr><td colspan="${Math.max(cols.length, 1)}" class="onto-muted">No rows.</td></tr>`;
+    const countLabel = data.truncated
+      ? `${rows.length} of ${data.total} rows`
+      : `${data.total} row${data.total === 1 ? '' : 's'}`;
+    return `
+      <div class="onto-data-block">
+        <div class="onto-data-head">
+          <h4>${title} <span class="onto-data-pill ${kind}">${kind === 'facts' ? 'facts.csv' : 'relations.csv'}</span></h4>
+          <span class="onto-data-count">${countLabel}</span>
+        </div>
+        <div class="md-table-wrap onto-data-scroll"><table class="md-table onto-schema-table onto-data-table">
+          <thead>${head}</thead>
+          <tbody>${body}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  async function loadSchemaDataSection() {
+    const section = el.schemaContent && el.schemaContent.querySelector('#schema-data-section');
+    if (!section) return;
+    let data = null;
+    try { data = await api(withSession('/api/dataset')); } catch (err) { data = null; }
+    const facts = data && data.facts;
+    const relations = data && data.relations;
+    const hasAny = (facts && facts.available) || (relations && relations.available);
+    section.innerHTML = `
+      <div class="onto-section-head">
+        <h3>Extracted Data</h3>
+        ${hasAny ? '<span class="onto-badge confirmed">Generated</span>' : '<span class="onto-badge none">Pending</span>'}
+      </div>
+      <p class="onto-section-hint">The structured facts &amp; relations the solver reads. Download the raw CSV / JSON below.</p>
+      ${hasAny ? dataDownloadRow() : ''}
+      ${dataTableHtml('Facts', 'Entity attributes', 'facts', facts)}
+      ${dataTableHtml('Relations', 'Entity-to-entity edges', 'relations_data', relations)}
+    `;
   }
 
   function renderSchemaModal() {
@@ -1858,53 +2031,108 @@
       return;
     }
     const editable = schema.status === 'draft';
+    const mode = state.schemaModalMode === 'suggest' ? 'suggest' : 'table';
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
-    const entityMeta = new Map(entities.map((item) => [item.name, item]));
-    const entityRows = entities.map((item, index) => `
-      <tr>
-        <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}">` : escapeHtml(item.name)}</td>
-        <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}">` : escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.value_type || 'str')}</td>
-        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
-      </tr>
-    `).join('');
-    const relationRows = relations.map((item, index) => {
-      const head = entityMeta.get(item.head_entity) || {};
-      const tail = entityMeta.get(item.tail_entity) || {};
+    const entityOptions = (selected) => entities.map((e) => {
+      const name = entityTypeOf(e);
+      return `<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+    }).join('');
+
+    const entityRows = entities.map((item, index) => {
+      if (!editable) {
+        return `
+          <tr>
+            <td><span class="onto-entity-name">${escapeHtml(entityTypeOf(item))}</span></td>
+            <td><span class="onto-type-pill">${escapeHtml(entityDataTypeOf(item))}</span></td>
+            <td>${attributesCellHtml(item)}</td>
+          </tr>`;
+      }
+      const dataType = entityDataTypeOf(item) === 'int' ? 'int' : 'str';
       return `
         <tr>
-          <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(head.entity_type || '')}</td>
-          <td>${escapeHtml(head.value_type || 'str')}</td>
-          <td>${editable ? `<input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}">` : escapeHtml(item.relation)}</td>
-          <td>${escapeHtml(item.tail_entity)}</td>
-          <td>${escapeHtml(tail.entity_type || '')}</td>
-          <td>${escapeHtml(tail.value_type || 'str')}</td>
-        </tr>
-      `;
+          <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(entityTypeOf(item))}" placeholder="EntityType"></td>
+          <td>
+            <select class="onto-cell-select" data-kind="entity" data-index="${index}" data-field="entity_data_type">
+              <option value="str"${dataType === 'str' ? ' selected' : ''}>str</option>
+              <option value="int"${dataType === 'int' ? ' selected' : ''}>int</option>
+            </select>
+          </td>
+          <td class="onto-attr-cell">${attributesEditHtml(item, index)}</td>
+          <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="entity" data-index="${index}" title="Remove entity" aria-label="Remove entity">×</button></td>
+        </tr>`;
     }).join('');
+
+    const relationRows = relations.map((item, index) => {
+      if (!editable) {
+        return `
+          <tr>
+            <td>${escapeHtml(relHeadOf(item))}</td>
+            <td><span class="onto-rel-pill">${escapeHtml(relTypeOf(item))}</span></td>
+            <td>${escapeHtml(relTailOf(item))}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="head_entity_type">${entityOptions(relHeadOf(item))}</select>
+          </td>
+          <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation_type" value="${escapeHtml(relTypeOf(item))}" placeholder="relation_type"></td>
+          <td>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="tail_entity_type">${entityOptions(relTailOf(item))}</select>
+          </td>
+          <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="relation" data-index="${index}" title="Remove relation" aria-label="Remove relation">×</button></td>
+        </tr>`;
+    }).join('');
+
+    const entityCols = editable ? 4 : 3;
+    const relationCols = editable ? 4 : 3;
+    const modeTabs = editable ? `
+      <div class="schema-edit-modes" role="tablist" aria-label="Schema editing mode">
+        <button type="button" class="schema-mode-btn${mode === 'table' ? ' active' : ''}" data-mode="table" role="tab" aria-selected="${mode === 'table'}">Edit tables</button>
+        <button type="button" class="schema-mode-btn${mode === 'suggest' ? ' active' : ''}" data-mode="suggest" role="tab" aria-selected="${mode === 'suggest'}">Ask the agent</button>
+      </div>` : '';
+
+    const tableBody = `
+      <div class="schema-edit-hint">${editable ? 'Editable — rename entities, edit each attribute and its data type, toggle <em>opt</em> for optional fields, set relation endpoints, then <strong>Apply changes</strong>.' : 'This schema is confirmed and read-only.'}</div>
+      <div class="onto-table-block">
+        <div class="onto-table-head"><h4>Entity Definitions</h4>${editable ? '<button type="button" class="onto-add-row" data-add="entity">+ Add entity</button>' : ''}</div>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
+          <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <tbody>${entityRows || `<tr><td colspan="${entityCols}" class="onto-muted">No entities yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      <div class="onto-table-block">
+        <div class="onto-table-head"><h4>Relation Schema</h4>${editable ? '<button type="button" class="onto-add-row" data-add="relation">+ Add relation</button>' : ''}</div>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
+          <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <tbody>${relationRows || `<tr><td colspan="${relationCols}" class="onto-muted">No relations yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      ${schemaDownloadRow(true)}
+      ${editable ? `
+        <div class="onto-schema-actions">
+          <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
+          <button class="onto-btn primary" id="schema-modal-confirm">Confirm &amp; Continue</button>
+        </div>
+        <div class="onto-schema-errors" id="schema-modal-errors"></div>
+      ` : ''}`;
+
+    const suggestBody = `
+      <div class="schema-suggest">
+        <div class="schema-edit-hint">Describe the change in plain language. The agent will rebuild the schema accordingly and bring it back here for review — your direct table edits are not sent in this mode.</div>
+        <textarea id="schema-suggest-input" class="schema-suggest-input" rows="5" placeholder="e.g. Add a 'co_authors' relation between Researcher and Researcher, and add a 'citation_count' integer attribute to Paper."></textarea>
+        <div class="onto-schema-actions">
+          <button class="onto-btn primary" id="schema-suggest-send">Send to agent</button>
+        </div>
+        <div class="onto-schema-errors" id="schema-modal-errors"></div>
+      </div>`;
+
     el.schemaModalBody.innerHTML = `
       <div class="schema-modal-grid">
         <section class="schema-preview-card modal-preview">
-          <h4>Entity Definitions</h4>
-          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
-          </table></div>
-          <h4>Relation Schema</h4>
-          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-            <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-            <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
-          </table></div>
-          ${schemaDownloadRow(true)}
-          ${editable ? `
-            <div class="onto-schema-actions">
-              <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
-              <button class="onto-btn primary" id="schema-modal-confirm">Confirm &amp; Continue</button>
-            </div>
-            <div class="onto-schema-errors" id="schema-modal-errors"></div>
-          ` : ''}
+          ${modeTabs}
+          ${mode === 'suggest' && editable ? suggestBody : tableBody}
         </section>
         <section class="schema-preview-card modal-code">
           <h4>Python View</h4>
@@ -1916,10 +2144,42 @@
     bindSchemaModalEditing();
   }
 
+  // Persist the current form to the draft schema. Returns true on success.
+  async function applySchemaForm(errorsBox) {
+    const data = await api('/api/schema/form', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_id: state.schema.run_id, form: state.schemaForm }),
+    });
+    if (!data.ok) {
+      if (errorsBox) errorsBox.textContent = (data.errors || []).join('; ') || 'Changes failed validation';
+      return false;
+    }
+    state.schema = data;
+    state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
+    state.schemaDirty = false;
+    return true;
+  }
+
   function bindSchemaModalEditing() {
     if (!el.schemaModalBody) return;
     const apply = el.schemaModalBody.querySelector('#schema-modal-apply');
     const errorsBox = el.schemaModalBody.querySelector('#schema-modal-errors');
+    const markDirty = () => {
+      state.schemaDirty = true;
+      if (apply) apply.disabled = false;
+    };
+
+    // Mode tabs (direct table edit vs. ask the agent)
+    el.schemaModalBody.querySelectorAll('.schema-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.schemaModalMode = btn.getAttribute('data-mode') === 'suggest' ? 'suggest' : 'table';
+        renderSchemaModal();
+      });
+    });
+
+    // Text cell edits (entity type, relation type). The class name IS the
+    // entity_type, so renaming an entity cascades to relation endpoints.
     el.schemaModalBody.querySelectorAll('.onto-cell-input').forEach((input) => {
       input.addEventListener('input', () => {
         const kind = input.getAttribute('data-kind');
@@ -1927,65 +2187,169 @@
         const field = input.getAttribute('data-field');
         const items = state.schemaForm.filter((item) => item.type === kind);
         if (!items[index]) return;
-        if (kind === 'entity' && field === 'name') {
-          const oldName = items[index].name;
+        if (kind === 'entity' && field === 'entity_type') {
+          const oldName = entityTypeOf(items[index]);
+          items[index].entity_type = input.value;
           items[index].name = input.value;
           state.schemaForm.forEach((item) => {
             if (item.type === 'relation') {
-              if (item.head_entity === oldName) item.head_entity = input.value;
-              if (item.tail_entity === oldName) item.tail_entity = input.value;
+              if (relHeadOf(item) === oldName) item.head_entity_type = input.value;
+              if (relTailOf(item) === oldName) item.tail_entity_type = input.value;
             }
           });
         } else {
           items[index][field] = input.value;
         }
-        state.schemaDirty = true;
-        if (apply) apply.disabled = false;
+        markDirty();
+      });
+      // Renaming an entity changes the dropdown options elsewhere; refresh on blur.
+      if (input.getAttribute('data-kind') === 'entity' && input.getAttribute('data-field') === 'entity_type') {
+        input.addEventListener('change', () => renderSchemaModal());
+      }
+    });
+
+    // Dropdown cell edits (entity_data_type, relation head/tail)
+    el.schemaModalBody.querySelectorAll('.onto-cell-select').forEach((select) => {
+      select.addEventListener('change', () => {
+        const kind = select.getAttribute('data-kind');
+        const index = Number(select.getAttribute('data-index'));
+        const field = select.getAttribute('data-field');
+        const items = state.schemaForm.filter((item) => item.type === kind);
+        if (!items[index]) return;
+        items[index][field] = select.value;
+        markDirty();
       });
     });
+
+    // Delete an entity or relation row
+    el.schemaModalBody.querySelectorAll('.onto-row-del').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const kind = btn.getAttribute('data-kind');
+        const index = Number(btn.getAttribute('data-index'));
+        const items = state.schemaForm.filter((item) => item.type === kind);
+        const target = items[index];
+        if (!target) return;
+        const pos = state.schemaForm.indexOf(target);
+        if (pos >= 0) state.schemaForm.splice(pos, 1);
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+
+    // Add a blank entity / relation row
+    el.schemaModalBody.querySelectorAll('.onto-add-row').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const what = btn.getAttribute('data-add');
+        if (what === 'entity') {
+          const existing = state.schemaForm.filter((i) => i.type === 'entity').map((i) => entityTypeOf(i));
+          let name = 'NewEntity';
+          let n = 1;
+          while (existing.includes(name)) { n += 1; name = `NewEntity${n}`; }
+          state.schemaForm.push({ type: 'entity', name, entity_type: name, entity_data_type: 'str', attributes: [] });
+        } else if (what === 'relation') {
+          const first = entityTypeOf(state.schemaForm.find((i) => i.type === 'entity') || {});
+          state.schemaForm.push({ type: 'relation', head_entity_type: first, relation_type: 'new_relation', tail_entity_type: first });
+        }
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+
+    // Attribute edits (name / data type / optional / delete / add) on a draft
+    // entity. Look the entity up the same way as the other cell handlers — by
+    // its position among the entity rows — and mutate its `attributes` list.
+    const entityAt = (index) => state.schemaForm.filter((item) => item.type === 'entity')[index];
+    const attrAt = (node) => {
+      const entity = entityAt(Number(node.getAttribute('data-index')));
+      const ai = Number(node.getAttribute('data-attr'));
+      if (!entity || !Array.isArray(entity.attributes) || !entity.attributes[ai]) return null;
+      return entity.attributes[ai];
+    };
+    el.schemaModalBody.querySelectorAll('.onto-attr-input').forEach((input) => {
+      input.addEventListener('input', () => {
+        const attr = attrAt(input);
+        if (!attr) return;
+        attr.attribute = input.value;
+        markDirty();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-type').forEach((select) => {
+      select.addEventListener('change', () => {
+        const attr = attrAt(select);
+        if (!attr) return;
+        attr.attribute_data_type = select.value;
+        markDirty();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-opt').forEach((box) => {
+      box.addEventListener('change', () => {
+        const attr = attrAt(box);
+        if (!attr) return;
+        attr.optional = box.checked;
+        markDirty();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-del').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const entity = entityAt(Number(btn.getAttribute('data-index')));
+        const ai = Number(btn.getAttribute('data-attr'));
+        if (!entity || !Array.isArray(entity.attributes) || !entity.attributes[ai]) return;
+        entity.attributes.splice(ai, 1);
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-add').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const entity = entityAt(Number(btn.getAttribute('data-index')));
+        if (!entity) return;
+        if (!Array.isArray(entity.attributes)) entity.attributes = [];
+        entity.attributes.push({ attribute: 'new_attribute', attribute_data_type: 'str', optional: false });
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+
     if (apply) {
       apply.addEventListener('click', async () => {
         try {
-          const data = await api('/api/schema/form', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ run_id: state.schema.run_id, form: state.schemaForm }),
-          });
-          if (!data.ok) {
-            errorsBox.textContent = (data.errors || []).join('; ') || 'Changes failed validation';
-            return;
+          if (await applySchemaForm(errorsBox)) {
+            renderSchemaModal();
+            renderSchemaTab();
+            renderMessages();
           }
-          state.schema = data;
-          state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
-          state.schemaDirty = false;
-          renderSchemaModal();
-          renderSchemaTab();
-          renderMessages();
         } catch (err) {
           errorsBox.textContent = `Apply failed: ${err.message}`;
         }
       });
     }
+
     const confirmBtn = el.schemaModalBody.querySelector('#schema-modal-confirm');
     if (confirmBtn) {
       confirmBtn.addEventListener('click', async () => {
         try {
-          const data = await api('/api/schema/confirm', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ run_id: state.schema.run_id }),
-          });
-          if (!data.ok) {
-            errorsBox.textContent = (data.errors || []).join('; ') || 'Confirmation failed';
-            return;
-          }
-          state.schema = data;
-          state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
+          // Flush any unsaved table edits to the draft first so the backend
+          // promotes the edited schema, then confirm via the explicit ptype.
+          if (state.schemaDirty && !(await applySchemaForm(errorsBox))) return;
           closeSchemaModal();
-          sendQuickReply('Confirm');
+          sendSchemaConfirm();
         } catch (err) {
-          errorsBox.textContent = `Confirmation failed: ${err.message}`;
+          if (errorsBox) errorsBox.textContent = `Confirmation failed: ${err.message}`;
         }
+      });
+    }
+
+    const suggestSend = el.schemaModalBody.querySelector('#schema-suggest-send');
+    if (suggestSend) {
+      suggestSend.addEventListener('click', () => {
+        const input = el.schemaModalBody.querySelector('#schema-suggest-input');
+        const text = input ? String(input.value || '').trim() : '';
+        if (!text) {
+          if (errorsBox) errorsBox.textContent = 'Describe the change you want first.';
+          return;
+        }
+        closeSchemaModal();
+        sendSchemaRevision(text);
       });
     }
   }
