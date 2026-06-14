@@ -34,6 +34,16 @@ Patch input may also include:
 }
 ```
 
+In **patch mode** (`schema_path` is present), do not rebuild from scratch: read
+the existing schema at `schema_path` first (via `source_reader`), then apply each
+item in `missing_requirements` to that schema and re-save. `missing_requirements`
+may be a precise gap from `schema_judger` (e.g. `"forward relation Company ->
+InvestmentInstitution (funded_by)"`) **or** a human's natural-language change
+request (e.g. "add a field for the journal name", "make `year` an attribute, not
+a relation", "把作者拆成单独的实体"). Interpret the human's intent, apply it while
+keeping the rest of the schema stable and valid, and keep the schema specific to
+the confirmed question. Do not re-run evidence collection.
+
 ## Output JSON
 
 Return only valid JSON:

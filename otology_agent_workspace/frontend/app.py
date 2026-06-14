@@ -1194,6 +1194,297 @@ def run_segment_solve(
     return _drive_coordinator(message, thread_id, run_dir, emit)
 
 
+# ---------------------------------------------------------------------------
+# General conversation + gate-intent routing (keeps the architecture general)
+#
+# The coordinator/subagents only run the heavy ontology pipeline. But this is a
+# *general* agent architecture: ordinary chat — greetings, follow-up questions,
+# side questions while a gate is open — must be answered directly without forcing
+# the clarify->evidence->schema->extract->solve flow. And at a human gate a typed
+# message may be a confirmation, a revision request, or an unrelated question.
+# We never hardcode this routing with string matching or a Python state machine:
+# we ask the same model that powers the coordinator to classify the message, then
+# act on its decision. The model owns every decision.
+# ---------------------------------------------------------------------------
+
+
+def _aux_llm():
+    """Build a bare (tool-less) chat model from the coordinator's model config.
+
+    Used for lightweight intent classification and direct general answers. It is
+    the same provider/model the coordinator runs on, built through the shared
+    ``_build_model`` helper, so no separate configuration is required."""
+    from harness.agents.agent_loop import _build_model
+
+    _agent, agent_cfg = get_cached_coordinator_agent()
+    return _build_model(agent_cfg.model)
+
+
+def _recent_dialogue(session: dict[str, Any], limit: int = 12) -> list[tuple[str, str]]:
+    """Return the last ``limit`` (role, content) user/assistant turns for context."""
+    turns: list[tuple[str, str]] = []
+    for message in session.get("messages", []):
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        turns.append((role, content))
+    return turns[-limit:]
+
+
+def _classify_intent(content: str, context: str, session: dict[str, Any]) -> str:
+    """Classify a free-text chat message at a decision point, via the model.
+
+    ``context`` is one of:
+      - ``"idle"``: no gate open. Returns ``"pipeline"`` (the question needs the
+        ontology schema-building workflow) or ``"general"`` (answer directly).
+      - ``"confirm_problem"`` / ``"confirm_schema"``: a human gate is open.
+        Returns ``"confirm"``, ``"revise"``, or ``"general"``.
+
+    Falls back conservatively if the model or parsing fails (idle->``"general"``;
+    gates->``"revise"``) so we never silently auto-confirm or force the pipeline
+    on an ambiguous message."""
+    import traceback as _tb
+
+    if context == "idle":
+        allowed = ("pipeline", "general")
+        guide = (
+            "The user just sent a new message and no confirmation gate is open. "
+            "Decide whether answering it REQUIRES the structured ontology workflow "
+            "(gather external evidence, design an ontology schema of multiple "
+            "entity/relation types, extract structured instances, then compute an "
+            "answer) -> reply `pipeline`; or whether it is ordinary conversation "
+            "that should be answered directly -> reply `general`.\n"
+            "Choose `pipeline` ONLY when the request is to collect, organize, or "
+            "compare information about real-world entities into a structured result "
+            "(e.g. 'list the data-analytics companies operating in the US with "
+            "their sub-domains', 'organize this person's papers and academic "
+            "activity over the last decade', or a multi-hop join over entities). "
+            "Choose `general` for greetings, chit-chat, opinions, definitions, "
+            "explanations, coding/math help, follow-up questions about the previous "
+            "answer, or any question a knowledgeable assistant can answer in prose."
+        )
+    elif context == "confirm_problem":
+        allowed = ("confirm", "revise", "general")
+        guide = (
+            "The assistant proposed a clarified problem statement and solution "
+            "steps and is waiting for the user. Classify the user's message:\n"
+            "- `confirm`: the user approves the problem/steps and wants to proceed "
+            "(e.g. 'ok', 'confirm', 'continue', 'looks good', '\u53ef\u4ee5', '\u7ee7\u7eed').\n"
+            "- `revise`: the user wants to change the problem or the steps (e.g. "
+            "'also include ...', 'change step 2 to ...', 'I actually meant ...', "
+            "'\u628a\u7b2c\u4e09\u6b65\u6539\u6210...').\n"
+            "- `general`: the user asks an unrelated/side question or small talk "
+            "to be answered without changing or confirming the plan."
+        )
+    else:  # confirm_schema
+        allowed = ("confirm", "revise", "general")
+        guide = (
+            "The assistant built an ontology schema (entities + relations) and is "
+            "waiting for the user to confirm it before extracting data. Classify "
+            "the user's message:\n"
+            "- `confirm`: the user approves the schema and wants to proceed (e.g. "
+            "'ok', 'confirm', 'continue', 'looks good', '\u786e\u8ba4', '\u6ca1\u95ee\u9898').\n"
+            "- `revise`: the user wants to change the schema -- add/remove/rename "
+            "an entity, attribute, or relation, change a relation's head/tail/type, "
+            "etc. (e.g. 'add an entity for ...', 'the relation should be ...', "
+            "'\u628aX\u6539\u6210\u5c5e\u6027', '\u52a0\u4e00\u4e2a\u5173\u7cfb...').\n"
+            "- `general`: the user asks an unrelated/side question or small talk "
+            "to be answered without changing or confirming the schema."
+        )
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    history = _recent_dialogue(session, limit=8)
+    history_text = "\n".join(f"{role.upper()}: {text}" for role, text in history) or "(none)"
+    system = (
+        "You are an intent classifier inside an ontology QA agent. Read the recent "
+        "conversation and the user's latest message, then output ONLY one word "
+        f"from this set: {', '.join(allowed)}. No punctuation, no explanation.\n\n"
+        + guide
+    )
+    prompt = (
+        f"Recent conversation:\n{history_text}\n\n"
+        f"User's latest message:\n{content}\n\n"
+        f"Answer with exactly one of: {', '.join(allowed)}."
+    )
+    fallback = "general" if context == "idle" else "revise"
+    try:
+        llm = _aux_llm()
+        reply = llm.invoke([SystemMessage(content=system), HumanMessage(content=prompt)])
+        text = str(getattr(reply, "content", "") or "").strip().lower()
+        for token in allowed:
+            if token in text:
+                return token
+        return fallback
+    except Exception:
+        _tb.print_exc()
+        return fallback
+
+
+GENERAL_SYSTEM_PROMPT = (
+    "You are the assistant of a general-purpose, ontology-based QA agent. For this "
+    "turn you are answering the user directly in normal conversation -- you are "
+    "NOT running the structured ontology pipeline (no evidence collection, schema "
+    "building, extraction, or solver). Answer helpfully, accurately, and "
+    "concisely. If you are uncertain, or the question needs fresh external data "
+    "you do not have, say so briefly. Reply in the user's language (default to "
+    "Chinese if the user wrote Chinese). Do not mention internal tools, subagents, "
+    "file paths, or pipeline steps."
+)
+
+
+def run_general_answer(content: str, history: list[tuple[str, str]], emit) -> str:
+    """Answer a general/non-pipeline message directly with a bare LLM call.
+
+    Streams tokens on the coordinator lane so the live card behaves like a normal
+    reply, and returns the final answer text. No stages, subagents, or schema --
+    this is what keeps the architecture general for ordinary questions."""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    messages: list[Any] = [SystemMessage(content=GENERAL_SYSTEM_PROMPT)]
+    for role, text in history:
+        messages.append(HumanMessage(content=text) if role == "user" else AIMessage(content=text))
+    messages.append(HumanMessage(content=content))
+
+    llm = _aux_llm()
+    thinking_buf = ""
+    output_buf = ""
+    last_emit = 0.0
+
+    def push(force: bool = False) -> None:
+        nonlocal last_emit
+        now = time.monotonic()
+        if not force and (now - last_emit) < 0.35:
+            return
+        last_emit = now
+        emit({
+            "type": "stream",
+            "stage": COORDINATOR_LANE,
+            "thinking": _tail(thinking_buf),
+            "output": _tail(output_buf),
+        })
+
+    try:
+        for chunk in llm.stream(messages):
+            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
+            push()
+    except Exception:
+        import traceback as _tb
+        _tb.print_exc()
+        reply = llm.invoke(messages)
+        output_buf = str(getattr(reply, "content", "") or "")
+    push(force=True)
+    return output_buf.strip()
+
+
+def _segment_message_clarify_revise(
+    question: str,
+    prior_problem: str,
+    prior_steps: list[str],
+    revision: str,
+    upload_paths: list[str],
+) -> str:
+    """Coordinator message for re-running Step 1 to REVISE the problem/steps."""
+    payload = {
+        "question": question,
+        "upload_paths": upload_paths,
+        "prior": {"problem": prior_problem, "steps": prior_steps},
+        "revision": revision,
+    }
+    steps_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(prior_steps)) or "(none)"
+    return (
+        "You are running a HUMAN-GATED ontology workflow at the problem-"
+        "clarification gate. You previously proposed the problem and steps below, "
+        "and the human has now asked you to REVISE them. Run ONLY Step 1 (problem "
+        "clarification) again via the `problem_clarifier` subagent, passing it the "
+        "inputs JSON (which includes `prior` and `revision`) so it returns an "
+        'UPDATED {"problem": "...", "steps": [...]}. Apply the human\'s revision '
+        "faithfully and keep everything else stable. Then STOP and output EXACTLY "
+        "that JSON object as your final message -- no prose, no other subagent "
+        "calls.\n\n"
+        f"Previously proposed problem:\n{prior_problem}\n\n"
+        f"Previously proposed steps:\n{steps_text}\n\n"
+        f"Human's requested changes:\n{revision}\n\n"
+        + _inputs_block(payload)
+        + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
+    )
+
+
+def _segment_message_schema_revise(
+    problem: str,
+    revision: str,
+    upload_paths: list[str],
+    workspace_dir: str,
+    run_id: str,
+    manifest_path: str,
+    draft_schema_path: str,
+) -> str:
+    """Coordinator message for PATCHING the schema per the human's request."""
+    payload = {
+        "question": problem,
+        "upload_paths": upload_paths,
+        "workspace_dir": workspace_dir,
+        "run_id": run_id,
+        "evidence_manifest_path": manifest_path,
+        "schema_path": draft_schema_path,
+        "missing_requirements": [revision],
+    }
+    return (
+        "You are continuing a HUMAN-GATED ontology workflow at the schema gate. "
+        "You already built the ontology schema saved at `schema_path` below, and "
+        "the human has reviewed it and requested the changes below. Apply them by "
+        "delegating with the `task` tool: call `schema_builder` in PATCH mode -- "
+        "pass it `schema_path`, `evidence_manifest_path`, and the human's changes "
+        "in `missing_requirements` -- so it edits the existing schema (do NOT "
+        "rebuild from scratch and do NOT re-run evidence collection) and re-saves "
+        "it via `save_schema`. Then call `schema_judger` once. After at most one "
+        "judge/patch cycle, STOP. Do NOT extract data or solve -- the human will "
+        "review the revised schema again.\n\n"
+        "When the revised schema is saved and validated, output a short JSON object "
+        '{"schema_outline": [...], "confirmed_schema_path": "<path>"} as your final '
+        "message. Do not include draft code, judgments, or file paths in any "
+        "user-facing prose.\n\n"
+        f"Confirmed problem:\n{problem}\n\n"
+        f"Human's requested schema changes:\n{revision}\n\n"
+        + _inputs_block(payload)
+        + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
+    )
+
+
+def run_segment_clarify_revise(
+    question: str,
+    prior_problem: str,
+    prior_steps: list[str],
+    revision: str,
+    upload_paths: list[str],
+    thread_id: str,
+    run_dir: Path,
+    emit,
+) -> str:
+    """Re-run Step 1 with the human's revision, then re-open the problem gate."""
+    message = _segment_message_clarify_revise(question, prior_problem, prior_steps, revision, upload_paths)
+    return _drive_coordinator(message, thread_id, run_dir, emit)
+
+
+def run_segment_schema_revise(
+    problem: str, revision: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
+) -> str:
+    """Patch the schema with the human's revision, then re-open the schema gate."""
+    vrun = vrun_for(run_dir)
+    message = _segment_message_schema_revise(
+        problem,
+        revision,
+        upload_paths,
+        vrun,
+        run_dir.name,
+        f"{vrun}/intermediate/evidence_manifest.json",
+        f"{vrun}/concepts/draft_schema.py",
+    )
+    return _drive_coordinator(message, thread_id, run_dir, emit)
+
+
 def _accumulate_stream(chunk: Any, thinking_buf: str, output_buf: str) -> tuple[str, str]:
     """Fold one streamed model chunk into the live thinking/output buffers.
 
@@ -1248,6 +1539,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     session["id"],
                     str(payload.get("problem", "")),
                     [str(item) for item in (payload.get("steps") or [])],
+                )
+            elif ptype == "confirm_schema":
+                await handle_confirm_schema(websocket, session["id"])
+            elif ptype == "revise_schema":
+                await handle_revise_schema(
+                    websocket, session["id"], str(payload.get("instruction", ""))
+                )
+            elif ptype == "revise_problem":
+                await handle_revise_problem(
+                    websocket, session["id"], str(payload.get("instruction", ""))
                 )
             elif ptype == "history":
                 await websocket.send_text(
@@ -1421,15 +1722,56 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
         return
 
     session = STORE.get(session_id)
-    # While the schema gate is open, an incoming chat is the user's confirmation
-    # to proceed to solving (the UI only offers Confirm / edit-in-Schema-Studio
-    # here, and the editor confirms via POST /api/schema/confirm then sends this).
-    if stage_status(session, "confirm_schema") == "waiting":
-        await handle_confirm_schema(websocket, session_id)
+
+    # ---- A human confirmation gate is open: the model decides what the typed
+    # message means (confirm / revise / unrelated question). We never assume a
+    # bare chat at a gate is a confirmation -- that broke robustness before. ----
+    schema_waiting = stage_status(session, "confirm_schema") == "waiting"
+    problem_waiting = stage_status(session, "confirm_problem") == "waiting"
+    if schema_waiting or problem_waiting:
+        gate = "confirm_schema" if schema_waiting else "confirm_problem"
+        intent = _classify_intent(content, gate, session)
+        # Echo the user's actual words so the transcript reflects what they said.
+        user_message = ui_message("user", content)
+        session["messages"].append(user_message)
+        STORE.save(session)
+        await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
+        if intent == "confirm":
+            if gate == "confirm_schema":
+                await handle_confirm_schema(websocket, session_id, echo=False)
+            else:
+                clar = session.get("clarification") or {}
+                await handle_confirm_problem(
+                    websocket,
+                    session_id,
+                    str(clar.get("problem") or ""),
+                    [str(item) for item in (clar.get("steps") or [])],
+                    echo=False,
+                )
+        elif intent == "revise":
+            if gate == "confirm_schema":
+                await handle_revise_schema(websocket, session_id, content, echo=False)
+            else:
+                await handle_revise_problem(websocket, session_id, content, echo=False)
+        else:  # general: answer the side question, keep the gate open.
+            await handle_general(websocket, session_id, content, reopen_gate=gate)
         return
 
-    # Otherwise this is a brand-new question: reset the pipeline for a fresh run.
+    # ---- No gate open: the model decides whether this needs the structured
+    # ontology pipeline or is ordinary conversation to answer directly. ----
     upload_names = [Path(str(item)).name for item in upload_ids if str(item).strip()]
+    intent = _classify_intent(content, "idle", session)
+    if intent == "general" and not upload_names:
+        user_message = ui_message("user", content)
+        session["messages"].append(user_message)
+        if sum(1 for item in session["messages"] if item.get("role") == "user") == 1:
+            session["title"] = content[:42] + ("..." if len(content) > 42 else "")
+        STORE.save(session)
+        await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
+        await handle_general(websocket, session_id, content, reopen_gate=None)
+        return
+
+    # ---- Pipeline: brand-new structured question -- reset for a fresh run. ----
     user_message = ui_message("user", content, uploads=upload_names)
     session["messages"].append(user_message)
     if sum(1 for item in session["messages"] if item.get("role") == "user") == 1:
@@ -1455,10 +1797,14 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
 
 
 async def handle_confirm_problem(
-    websocket: Any, session_id: str, problem: str, steps: list[str]
+    websocket: Any, session_id: str, problem: str, steps: list[str], echo: bool = True
 ) -> None:
     """The user confirmed (and may have edited) the clarified problem + steps.
-    Persist them and run segment 2 (evidence + schema), then open the schema gate."""
+    Persist them and run segment 2 (evidence + schema), then open the schema gate.
+
+    ``echo`` controls whether we append a canned confirmation bubble. It is True
+    for the explicit Confirm button (which carries no user text) and False when
+    the caller already echoed the user's own words (free-text confirm at the gate)."""
     problem = problem.strip()
     steps = [str(item).strip() for item in steps if str(item).strip()]
     session = STORE.get(session_id)
@@ -1469,10 +1815,11 @@ async def handle_confirm_problem(
     session["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
     set_stage(session, "confirm_problem", "done")
     paths = resolve_upload_paths(session_id, session, [])
-    confirm_message = ui_message("user", "Confirmed the problem and solution steps. Please continue.")
-    session["messages"].append(confirm_message)
+    if echo:
+        confirm_message = ui_message("user", "Confirmed the problem and solution steps. Please continue.")
+        session["messages"].append(confirm_message)
+        await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
     STORE.save(session)
-    await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
     await _emit_run_start(websocket, session_id, "Problem confirmed. Collecting evidence and building the schema…")
 
     run_dir = RUNS_DIR / run_id
@@ -1486,9 +1833,12 @@ async def handle_confirm_problem(
     await _stream_run(websocket, session_id, runner, on_done)
 
 
-async def handle_confirm_schema(websocket: Any, session_id: str) -> None:
+async def handle_confirm_schema(websocket: Any, session_id: str, echo: bool = True) -> None:
     """The user confirmed (and may have edited via Schema Studio) the schema.
-    Promote the draft, rebuild the workspace, and run segment 3 (extract + solve)."""
+    Promote the draft, rebuild the workspace, and run segment 3 (extract + solve).
+
+    ``echo`` controls the canned confirmation bubble (True for the explicit
+    Confirm button; False when the caller already echoed the user's own words)."""
     session = STORE.get(session_id)
     run_id = session.get("run_id", "")
     if not run_id:
@@ -1504,10 +1854,11 @@ async def handle_confirm_schema(websocket: Any, session_id: str) -> None:
                 break
     set_stage(session, "confirm_schema", "done")
     paths = resolve_upload_paths(session_id, session, [])
-    confirm_message = ui_message("user", "Confirmed the schema. Please continue solving.")
-    session["messages"].append(confirm_message)
+    if echo:
+        confirm_message = ui_message("user", "Confirmed the schema. Please continue solving.")
+        session["messages"].append(confirm_message)
+        await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
     STORE.save(session)
-    await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
     await _emit_run_start(websocket, session_id, "Schema confirmed. Extracting data and solving…")
 
     def runner(emit) -> str:
@@ -1520,6 +1871,151 @@ async def handle_confirm_schema(websocket: Any, session_id: str) -> None:
         return await _finalize_answer(websocket, sid, final)
 
     await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def handle_revise_problem(
+    websocket: Any, session_id: str, instruction: str, echo: bool = True
+) -> None:
+    """The user asked to change the clarified problem/steps. Re-run Step 1 with
+    the revision via problem_clarifier, then re-open the problem gate."""
+    instruction = instruction.strip()
+    if not instruction:
+        return
+    session = STORE.get(session_id)
+    run_id = session.get("run_id", "")
+    if not run_id:
+        return
+    clar = session.get("clarification") or {}
+    prior_problem = str(clar.get("problem") or "").strip()
+    prior_steps = [str(item) for item in (clar.get("steps") or [])]
+    paths = resolve_upload_paths(session_id, session, [])
+    if echo:
+        user_message = ui_message("user", instruction)
+        session["messages"].append(user_message)
+        await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
+    STORE.save(session)
+    await _emit_run_start(websocket, session_id, "Updating the problem statement per your request…")
+
+    run_dir = RUNS_DIR / run_id
+
+    def runner(emit) -> str:
+        return run_segment_clarify_revise(
+            prior_problem or instruction,
+            prior_problem,
+            prior_steps,
+            instruction,
+            paths,
+            f"{run_id}:{AGENT_ID}:clarify-revise",
+            run_dir,
+            emit,
+        )
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_problem_gate(websocket, sid, final)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def handle_revise_schema(
+    websocket: Any, session_id: str, instruction: str, echo: bool = True
+) -> None:
+    """The user asked to change the schema. Patch it via schema_builder (PATCH
+    mode) + re-judge, then re-open the schema gate for another review."""
+    instruction = instruction.strip()
+    if not instruction:
+        return
+    session = STORE.get(session_id)
+    run_id = session.get("run_id", "")
+    if not run_id:
+        return
+    clar = session.get("clarification") or {}
+    problem = str(clar.get("problem") or "").strip()
+    if not problem:
+        for message in reversed(session.get("messages", [])):
+            if message.get("role") == "user" and message.get("content"):
+                problem = str(message["content"]).strip()
+                break
+    paths = resolve_upload_paths(session_id, session, [])
+    if echo:
+        user_message = ui_message("user", instruction)
+        session["messages"].append(user_message)
+        await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
+    STORE.save(session)
+    await _emit_run_start(websocket, session_id, "Revising the schema per your request…")
+
+    run_dir = RUNS_DIR / run_id
+
+    def runner(emit) -> str:
+        return run_segment_schema_revise(
+            problem, instruction, paths, f"{run_id}:{AGENT_ID}:schema-revise", run_dir, emit
+        )
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_schema_gate(websocket, sid, final)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def handle_general(
+    websocket: Any, session_id: str, content: str, reopen_gate: str | None = None
+) -> None:
+    """Answer a general/non-pipeline message directly with a bare LLM call.
+
+    Assumes the caller already appended the user's message to the transcript. If
+    ``reopen_gate`` is set, the open gate's card is re-emitted afterwards so it
+    stays actionable (the frontend only renders gate buttons on the last message)."""
+    session = STORE.get(session_id)
+    history = _recent_dialogue(session, limit=12)
+    # Drop the trailing user turn (the current message) so it isn't duplicated.
+    if history and history[-1][0] == "user" and history[-1][1] == content.strip():
+        history = history[:-1]
+    await _emit_run_start(websocket, session_id, "Answering directly…")
+
+    def runner(emit) -> str:
+        return run_general_answer(content, history, emit)
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_general(websocket, sid, final, reopen_gate)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def _finalize_general(
+    websocket: Any, session_id: str, final: str, reopen_gate: str | None
+) -> str | None:
+    """Deliver a direct general answer, then re-open the gate card if one is open."""
+    session = STORE.get(session_id)
+    if not final:
+        return "This run produced no reply. Please retry."
+    message = ui_message("assistant", final)
+    session["messages"].append(message)
+    STORE.save(session)
+    await _send_assistant_final(websocket, session, message)
+
+    if reopen_gate == "confirm_problem":
+        clar = session.get("clarification") or {}
+        if clar.get("problem"):
+            gate_message = ui_message(
+                "assistant",
+                "Back to the problem confirmation — confirm or edit the problem and steps to continue.",
+                clarification={"problem": clar.get("problem"), "steps": clar.get("steps", [])},
+                waiting="confirm_problem",
+            )
+            session["messages"].append(gate_message)
+            STORE.save(session)
+            await _send_assistant_final(websocket, session, gate_message)
+    elif reopen_gate == "confirm_schema":
+        gate_message = ui_message(
+            "assistant",
+            "Back to the schema confirmation — review and confirm it below; "
+            "open Schema Studio to edit before confirming if needed.\n\n"
+            "**Entity Definitions**\n\n**Relation Schema**",
+            waiting="confirm_schema",
+        )
+        session["messages"].append(gate_message)
+        STORE.save(session)
+        await _send_assistant_final(websocket, session, gate_message)
+    return None
 
 
 async def _finalize_problem_gate(websocket: Any, session_id: str, final: str) -> str | None:
@@ -1628,6 +2124,12 @@ async def chat_fallback(session_id: str, request: Request):
             str(payload.get("problem", "")),
             [str(item) for item in (payload.get("steps") or [])],
         )
+    elif payload_type == "confirm_schema":
+        await handle_confirm_schema(sink, session["id"])
+    elif payload_type == "revise_schema":
+        await handle_revise_schema(sink, session["id"], str(payload.get("instruction", "")))
+    elif payload_type == "revise_problem":
+        await handle_revise_problem(sink, session["id"], str(payload.get("instruction", "")))
     elif payload_type == "history":
         sink.events.append({"type": "history", "session": STORE.get(session["id"])})
     else:

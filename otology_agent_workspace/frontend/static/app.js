@@ -67,6 +67,7 @@
     schema: null,
     schemaForm: [],
     schemaDirty: false,
+    schemaModalMode: 'table',
     panelTab: 'evidence',
     isComposing: false,
     activeClarificationMessageId: '',
@@ -874,27 +875,22 @@
         </section>
       `;
     }
-    const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item) => `
       <tr>
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(item.id_type || item.value_type || 'str')}</td>
         <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item) => {
-      const head = entityMeta.get(item.head_entity) || {};
-      const tail = entityMeta.get(item.tail_entity) || {};
+      const relType = item.relation_type === 'many_to_one' ? 'many-to-one' : 'many-to-many';
       return `
         <tr>
           <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(head.entity_type || '')}</td>
-          <td>${escapeHtml(head.value_type || 'str')}</td>
           <td>${escapeHtml(item.relation)}</td>
+          <td>${relType}</td>
           <td>${escapeHtml(item.tail_entity)}</td>
-          <td>${escapeHtml(tail.entity_type || '')}</td>
-          <td>${escapeHtml(tail.value_type || 'str')}</td>
         </tr>
       `;
     }).join('');
@@ -912,13 +908,13 @@
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>ID Type</th><th>Attributes</th></tr></thead>
             <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-            <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-            <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+            <thead><tr><th>Head Entity</th><th>Relation Name</th><th>Cardinality</th><th>Tail Entity</th></tr></thead>
+            <tbody>${relationRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
           </table></div>
         </div>
       </section>
@@ -1381,6 +1377,35 @@
     }
   }
 
+  // Explicit schema-gate confirmation — uses a dedicated control message instead
+  // of free-text so the backend never has to guess intent from prose.
+  function sendSchemaConfirm() {
+    if (state.running) return;
+    const payload = { type: 'confirm_schema' };
+    state.forceScroll = true;
+    if (state.wsReady) {
+      setRunning(true, 'The agent is working on your request…');
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload, { optimistic: false });
+    }
+  }
+
+  // Second edit mode: hand a natural-language revision request to the agent,
+  // which re-runs the schema step (problem_clarifier / schema_builder) with it.
+  function sendSchemaRevision(instruction) {
+    const text = String(instruction || '').trim();
+    if (!text || state.running) return;
+    const payload = { type: 'revise_schema', instruction: text };
+    state.forceScroll = true;
+    if (state.wsReady) {
+      setRunning(true, 'The agent is revising the schema…');
+      state.ws.send(JSON.stringify(payload));
+    } else {
+      sendViaHttp(payload, { optimistic: false });
+    }
+  }
+
   function renumberClarifyModalSteps() {
     if (!el.clarifyModalSteps) return;
     el.clarifyModalSteps.querySelectorAll('.clarify-step-no').forEach((badge, index) => {
@@ -1539,7 +1564,7 @@
       });
     });
     el.messages.querySelectorAll('[data-action="confirm"]').forEach((button) => {
-      button.addEventListener('click', () => sendQuickReply('Confirm'));
+      button.addEventListener('click', () => sendSchemaConfirm());
     });
     el.messages.querySelectorAll('[data-action="confirm-clarification-direct"]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -1639,36 +1664,42 @@
 
   const PANEL_INTROS = {
     evidence: {
-      icon: '◈',
       kicker: 'Files & Evidence',
       title: 'Evidence for grounding',
       desc: 'Upload CSV / TXT / MD files and review the evidence manifest the agent collected. Everything the schema and answers are built from lives here.',
+      steps: ['Upload source files', 'Agent verifies coverage', 'Review the manifest'],
     },
     schema: {
-      icon: '▦',
       kicker: 'Schema Studio',
       title: 'Your ontology schema',
-      desc: 'Review the entities and relations the agent built, edit the draft, and download the schema or tables. The confirmed schema drives extraction and solving.',
+      desc: 'Review the entities and relations the agent built, edit the draft directly or ask the agent to revise it, then confirm. The confirmed schema drives extraction and solving.',
+      steps: ['Review entities & relations', 'Edit tables or ask the agent', 'Confirm to continue'],
     },
     progress: {
-      icon: '◎',
       kicker: 'Run & Results',
       title: 'Pipeline progress',
-      desc: 'Track the eight-stage ontology QA pipeline — from clarifying your question to the final grounded answer.',
+      desc: 'Track the ontology QA pipeline — from clarifying your question, through schema and data extraction, to the final grounded answer.',
+      steps: ['Clarify & confirm', 'Build schema & extract', 'Solve & answer'],
     },
   };
 
   function panelIntro(tab) {
     const intro = PANEL_INTROS[tab];
     if (!intro) return '';
+    const steps = (intro.steps || [])
+      .map((label, i) => `<span><strong>${i + 1}</strong>${escapeHtml(label)}</span>`)
+      .join('');
+    const stepsBlock = steps
+      ? `<div class="import-steps" aria-label="${escapeHtml(intro.kicker)} steps">${steps}</div>`
+      : '';
     return `
-      <div class="panel-intro">
-        <span class="panel-intro-icon" aria-hidden="true">${intro.icon}</span>
-        <div class="panel-intro-text">
-          <span class="panel-intro-kicker">${escapeHtml(intro.kicker)}</span>
-          <h2 class="panel-intro-title">${escapeHtml(intro.title)}</h2>
-          <p class="panel-intro-desc">${escapeHtml(intro.desc)}</p>
+      <div class="schema-hero refined-import-hero panel-hero">
+        <div>
+          <span class="schema-kicker">${escapeHtml(intro.kicker)}</span>
+          <h2>${escapeHtml(intro.title)}</h2>
+          <p>${escapeHtml(intro.desc)}</p>
         </div>
+        ${stepsBlock}
       </div>`;
   }
 
@@ -1802,27 +1833,22 @@
     }
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
-    const entityMeta = new Map(entities.map((item) => [item.name, item]));
     const entityRows = entities.map((item) => `
       <tr>
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(item.id_type || item.value_type || 'str')}</td>
         <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item) => {
-      const head = entityMeta.get(item.head_entity) || {};
-      const tail = entityMeta.get(item.tail_entity) || {};
+      const relType = item.relation_type === 'many_to_one' ? 'many-to-one' : 'many-to-many';
       return `
         <tr>
           <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(head.entity_type || '')}</td>
-          <td>${escapeHtml(head.value_type || 'str')}</td>
           <td>${escapeHtml(item.relation)}</td>
+          <td>${relType}</td>
           <td>${escapeHtml(item.tail_entity)}</td>
-          <td>${escapeHtml(tail.entity_type || '')}</td>
-          <td>${escapeHtml(tail.value_type || 'str')}</td>
         </tr>
       `;
     }).join('');
@@ -1834,13 +1860,13 @@
           ${schemaDownloadRow(true)}
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>ID Type</th><th>Attributes</th></tr></thead>
           <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
         </table></div>
         <h4 class="onto-subhead">Relation Schema</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
+          <thead><tr><th>Head Entity</th><th>Relation Name</th><th>Cardinality</th><th>Tail Entity</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
         </table></div>
       </div>
       <div class="onto-section">
@@ -1858,53 +1884,118 @@
       return;
     }
     const editable = schema.status === 'draft';
+    const mode = state.schemaModalMode === 'suggest' ? 'suggest' : 'table';
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
-    const entityMeta = new Map(entities.map((item) => [item.name, item]));
-    const entityRows = entities.map((item, index) => `
-      <tr>
-        <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}">` : escapeHtml(item.name)}</td>
-        <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}">` : escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.value_type || 'str')}</td>
-        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
-      </tr>
-    `).join('');
-    const relationRows = relations.map((item, index) => {
-      const head = entityMeta.get(item.head_entity) || {};
-      const tail = entityMeta.get(item.tail_entity) || {};
+    const entityOptions = (selected) => entities.map((e) => {
+      const name = e.name || '';
+      return `<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`;
+    }).join('');
+
+    const entityRows = entities.map((item, index) => {
+      if (!editable) {
+        return `
+          <tr>
+            <td>${escapeHtml(item.name)}</td>
+            <td>${escapeHtml(item.entity_type || '')}</td>
+            <td>${escapeHtml(item.id_type || item.value_type || 'str')}</td>
+            <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+          </tr>`;
+      }
+      const idType = (item.id_type || 'str') === 'int' ? 'int' : 'str';
       return `
         <tr>
-          <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(head.entity_type || '')}</td>
-          <td>${escapeHtml(head.value_type || 'str')}</td>
-          <td>${editable ? `<input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}">` : escapeHtml(item.relation)}</td>
-          <td>${escapeHtml(item.tail_entity)}</td>
-          <td>${escapeHtml(tail.entity_type || '')}</td>
-          <td>${escapeHtml(tail.value_type || 'str')}</td>
-        </tr>
-      `;
+          <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}" placeholder="EntityName"></td>
+          <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}" placeholder="type"></td>
+          <td>
+            <select class="onto-cell-select" data-kind="entity" data-index="${index}" data-field="id_type">
+              <option value="str"${idType === 'str' ? ' selected' : ''}>str</option>
+              <option value="int"${idType === 'int' ? ' selected' : ''}>int</option>
+            </select>
+          </td>
+          <td class="onto-attr-cell">${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+          <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="entity" data-index="${index}" title="Remove entity" aria-label="Remove entity">×</button></td>
+        </tr>`;
     }).join('');
+
+    const relationRows = relations.map((item, index) => {
+      const relType = item.relation_type === 'many_to_one' ? 'many_to_one' : 'many_to_many';
+      if (!editable) {
+        return `
+          <tr>
+            <td>${escapeHtml(item.head_entity)}</td>
+            <td>${escapeHtml(item.relation)}</td>
+            <td>${relType === 'many_to_one' ? 'many-to-one' : 'many-to-many'}</td>
+            <td>${escapeHtml(item.tail_entity)}</td>
+          </tr>`;
+      }
+      return `
+        <tr>
+          <td>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="head_entity">${entityOptions(item.head_entity)}</select>
+          </td>
+          <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}" placeholder="relation_name"></td>
+          <td>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="relation_type">
+              <option value="many_to_many"${relType === 'many_to_many' ? ' selected' : ''}>many-to-many (List)</option>
+              <option value="many_to_one"${relType === 'many_to_one' ? ' selected' : ''}>many-to-one (Optional)</option>
+            </select>
+          </td>
+          <td>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="tail_entity">${entityOptions(item.tail_entity)}</select>
+          </td>
+          <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="relation" data-index="${index}" title="Remove relation" aria-label="Remove relation">×</button></td>
+        </tr>`;
+    }).join('');
+
+    const entityCols = editable ? 5 : 4;
+    const relationCols = editable ? 5 : 4;
+    const modeTabs = editable ? `
+      <div class="schema-edit-modes" role="tablist" aria-label="Schema editing mode">
+        <button type="button" class="schema-mode-btn${mode === 'table' ? ' active' : ''}" data-mode="table" role="tab" aria-selected="${mode === 'table'}">Edit tables</button>
+        <button type="button" class="schema-mode-btn${mode === 'suggest' ? ' active' : ''}" data-mode="suggest" role="tab" aria-selected="${mode === 'suggest'}">Ask the agent</button>
+      </div>` : '';
+
+    const tableBody = `
+      <div class="schema-edit-hint">${editable ? 'Editable — click any cell to change it, use the dropdowns for entities and cardinality, then <strong>Apply changes</strong>.' : 'This schema is confirmed and read-only.'}</div>
+      <div class="onto-table-block">
+        <div class="onto-table-head"><h4>Entity Definitions</h4>${editable ? '<button type="button" class="onto-add-row" data-add="entity">+ Add entity</button>' : ''}</div>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>ID Type</th><th>Attributes</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <tbody>${entityRows || `<tr><td colspan="${entityCols}" class="onto-muted">No entities yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      <div class="onto-table-block">
+        <div class="onto-table-head"><h4>Relation Schema</h4>${editable ? '<button type="button" class="onto-add-row" data-add="relation">+ Add relation</button>' : ''}</div>
+        <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
+          <thead><tr><th>Head Entity</th><th>Relation Name</th><th>Cardinality</th><th>Tail Entity</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <tbody>${relationRows || `<tr><td colspan="${relationCols}" class="onto-muted">No relations yet.</td></tr>`}</tbody>
+        </table></div>
+      </div>
+      ${schemaDownloadRow(true)}
+      ${editable ? `
+        <div class="onto-schema-actions">
+          <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
+          <button class="onto-btn primary" id="schema-modal-confirm">Confirm &amp; Continue</button>
+        </div>
+        <div class="onto-schema-errors" id="schema-modal-errors"></div>
+      ` : ''}`;
+
+    const suggestBody = `
+      <div class="schema-suggest">
+        <div class="schema-edit-hint">Describe the change in plain language. The agent will rebuild the schema accordingly and bring it back here for review — your direct table edits are not sent in this mode.</div>
+        <textarea id="schema-suggest-input" class="schema-suggest-input" rows="5" placeholder="e.g. Add a 'co_authors' relation between Researcher and Researcher, and add a 'citation_count' integer attribute to Paper."></textarea>
+        <div class="onto-schema-actions">
+          <button class="onto-btn primary" id="schema-suggest-send">Send to agent</button>
+        </div>
+        <div class="onto-schema-errors" id="schema-modal-errors"></div>
+      </div>`;
+
     el.schemaModalBody.innerHTML = `
       <div class="schema-modal-grid">
         <section class="schema-preview-card modal-preview">
-          <h4>Entity Definitions</h4>
-          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
-          </table></div>
-          <h4>Relation Schema</h4>
-          <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-            <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
-            <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
-          </table></div>
-          ${schemaDownloadRow(true)}
-          ${editable ? `
-            <div class="onto-schema-actions">
-              <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
-              <button class="onto-btn primary" id="schema-modal-confirm">Confirm &amp; Continue</button>
-            </div>
-            <div class="onto-schema-errors" id="schema-modal-errors"></div>
-          ` : ''}
+          ${modeTabs}
+          ${mode === 'suggest' && editable ? suggestBody : tableBody}
         </section>
         <section class="schema-preview-card modal-code">
           <h4>Python View</h4>
@@ -1916,10 +2007,41 @@
     bindSchemaModalEditing();
   }
 
+  // Persist the current form to the draft schema. Returns true on success.
+  async function applySchemaForm(errorsBox) {
+    const data = await api('/api/schema/form', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_id: state.schema.run_id, form: state.schemaForm }),
+    });
+    if (!data.ok) {
+      if (errorsBox) errorsBox.textContent = (data.errors || []).join('; ') || 'Changes failed validation';
+      return false;
+    }
+    state.schema = data;
+    state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
+    state.schemaDirty = false;
+    return true;
+  }
+
   function bindSchemaModalEditing() {
     if (!el.schemaModalBody) return;
     const apply = el.schemaModalBody.querySelector('#schema-modal-apply');
     const errorsBox = el.schemaModalBody.querySelector('#schema-modal-errors');
+    const markDirty = () => {
+      state.schemaDirty = true;
+      if (apply) apply.disabled = false;
+    };
+
+    // Mode tabs (direct table edit vs. ask the agent)
+    el.schemaModalBody.querySelectorAll('.schema-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.schemaModalMode = btn.getAttribute('data-mode') === 'suggest' ? 'suggest' : 'table';
+        renderSchemaModal();
+      });
+    });
+
+    // Text cell edits (entity name/entity_type, relation name)
     el.schemaModalBody.querySelectorAll('.onto-cell-input').forEach((input) => {
       input.addEventListener('input', () => {
         const kind = input.getAttribute('data-kind');
@@ -1939,53 +2061,101 @@
         } else {
           items[index][field] = input.value;
         }
-        state.schemaDirty = true;
-        if (apply) apply.disabled = false;
+        markDirty();
+      });
+      // Renaming an entity changes the dropdown options elsewhere; refresh on blur.
+      if (input.getAttribute('data-kind') === 'entity' && input.getAttribute('data-field') === 'name') {
+        input.addEventListener('change', () => renderSchemaModal());
+      }
+    });
+
+    // Dropdown cell edits (entity id_type, relation head/tail/relation_type)
+    el.schemaModalBody.querySelectorAll('.onto-cell-select').forEach((select) => {
+      select.addEventListener('change', () => {
+        const kind = select.getAttribute('data-kind');
+        const index = Number(select.getAttribute('data-index'));
+        const field = select.getAttribute('data-field');
+        const items = state.schemaForm.filter((item) => item.type === kind);
+        if (!items[index]) return;
+        items[index][field] = select.value;
+        markDirty();
       });
     });
+
+    // Delete an entity or relation row
+    el.schemaModalBody.querySelectorAll('.onto-row-del').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const kind = btn.getAttribute('data-kind');
+        const index = Number(btn.getAttribute('data-index'));
+        const items = state.schemaForm.filter((item) => item.type === kind);
+        const target = items[index];
+        if (!target) return;
+        const pos = state.schemaForm.indexOf(target);
+        if (pos >= 0) state.schemaForm.splice(pos, 1);
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+
+    // Add a blank entity / relation row
+    el.schemaModalBody.querySelectorAll('.onto-add-row').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const what = btn.getAttribute('data-add');
+        if (what === 'entity') {
+          const existing = state.schemaForm.filter((i) => i.type === 'entity').map((i) => i.name);
+          let name = 'NewEntity';
+          let n = 1;
+          while (existing.includes(name)) { n += 1; name = `NewEntity${n}`; }
+          state.schemaForm.push({ type: 'entity', name, entity_type: name.toLowerCase(), value_type: null, id_type: 'str', attributes: [] });
+        } else if (what === 'relation') {
+          const first = (state.schemaForm.find((i) => i.type === 'entity') || {}).name || '';
+          state.schemaForm.push({ type: 'relation', head_entity: first, relation: 'new_relation', relation_type: 'many_to_many', tail_entity: first });
+        }
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+
     if (apply) {
       apply.addEventListener('click', async () => {
         try {
-          const data = await api('/api/schema/form', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ run_id: state.schema.run_id, form: state.schemaForm }),
-          });
-          if (!data.ok) {
-            errorsBox.textContent = (data.errors || []).join('; ') || 'Changes failed validation';
-            return;
+          if (await applySchemaForm(errorsBox)) {
+            renderSchemaModal();
+            renderSchemaTab();
+            renderMessages();
           }
-          state.schema = data;
-          state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
-          state.schemaDirty = false;
-          renderSchemaModal();
-          renderSchemaTab();
-          renderMessages();
         } catch (err) {
           errorsBox.textContent = `Apply failed: ${err.message}`;
         }
       });
     }
+
     const confirmBtn = el.schemaModalBody.querySelector('#schema-modal-confirm');
     if (confirmBtn) {
       confirmBtn.addEventListener('click', async () => {
         try {
-          const data = await api('/api/schema/confirm', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ run_id: state.schema.run_id }),
-          });
-          if (!data.ok) {
-            errorsBox.textContent = (data.errors || []).join('; ') || 'Confirmation failed';
-            return;
-          }
-          state.schema = data;
-          state.schemaForm = JSON.parse(JSON.stringify(data.form || []));
+          // Flush any unsaved table edits to the draft first so the backend
+          // promotes the edited schema, then confirm via the explicit ptype.
+          if (state.schemaDirty && !(await applySchemaForm(errorsBox))) return;
           closeSchemaModal();
-          sendQuickReply('Confirm');
+          sendSchemaConfirm();
         } catch (err) {
-          errorsBox.textContent = `Confirmation failed: ${err.message}`;
+          if (errorsBox) errorsBox.textContent = `Confirmation failed: ${err.message}`;
         }
+      });
+    }
+
+    const suggestSend = el.schemaModalBody.querySelector('#schema-suggest-send');
+    if (suggestSend) {
+      suggestSend.addEventListener('click', () => {
+        const input = el.schemaModalBody.querySelector('#schema-suggest-input');
+        const text = input ? String(input.value || '').trim() : '';
+        if (!text) {
+          if (errorsBox) errorsBox.textContent = 'Describe the change you want first.';
+          return;
+        }
+        closeSchemaModal();
+        sendSchemaRevision(text);
       });
     }
   }

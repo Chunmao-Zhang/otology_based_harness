@@ -163,12 +163,37 @@ silently makes the question unanswerable. Therefore:
   candidate companies with founders and investors, emit all 6 (plus their prior
   companies and investors), not a convenient subset.
 
-## Evidence Reuse and Supplementary Search
+## Collect the Full Data Here — Search Comprehensively (critical)
 
-- Read the evidence manifest first and reuse its registered sources: uploads via `source_reader` / `evidence_retriever`, and persisted web evidence from the `evidence_path` files under `intermediate/web_evidence/`.
-- Do not repeat searches that `evidence_collector` already performed.
-- Call `web_search` only when a schema element has no supporting data in any registered source. Use at most one supplementary search call and at most 3 results.
-- The `web_search` tool persists each supplementary result automatically under `intermediate/web_evidence/`, continuing the `web_NNN` id sequence; you do not write those files yourself.
+You are the step that performs the **full** data collection. `evidence_collector`
+only verified that the schema is *obtainable* with a few probe searches; it
+deliberately did not gather everything. So most of the run's search budget is
+still available and is meant for you — use it to populate every schema element
+completely. Do not stop early ("浅尝辄止"); shallow extraction here is the main
+cause of incomplete answers.
+
+- Read the evidence manifest first and reuse its registered sources: uploads via
+  `source_reader` / `evidence_retriever`, and the persisted web evidence under
+  `intermediate/web_evidence/`. Reuse beats re-fetching, so start from what is
+  already there.
+- Then search the web as much as needed to **fully** populate the schema: issue
+  multiple, distinct, targeted `web_search` queries to cover every entity,
+  attribute, and relation the schema and question require. For a question about
+  one subject (e.g. a person's papers and activity over a decade), search each
+  facet separately — publications, awards, roles, affiliations, milestones by
+  period — rather than relying on a single query.
+- For multi-hop / join questions, search for **each** candidate entity and each
+  connecting fact (e.g. every company's investors, every founder's prior
+  employer), not just one or two. Missing one hop makes the answer unanswerable.
+- Don't needlessly repeat an identical query `evidence_collector` already ran if
+  its results are registered, but do go deeper and broader than the verification
+  pass did — that is exactly your job.
+- Use at most 3 results per search. The backend caps the total searches per run
+  (a budget shared with `evidence_collector`); spend the remaining budget here on
+  the highest-value distinct queries until the schema is fully populated.
+- The `web_search` tool persists each result automatically under
+  `intermediate/web_evidence/`, continuing the `web_NNN` id sequence; you do not
+  write those files yourself.
 
 ## Boundaries
 

@@ -26,6 +26,24 @@ Your entire assistant message must be one JSON object.
 }
 ```
 
+### Revision input (optional)
+
+When the human asked to change a previously proposed result, the input also
+includes `prior` and `revision`:
+
+```json
+{
+  "question": "...",
+  "upload_paths": [],
+  "prior": { "problem": "...", "steps": ["..."] },
+  "revision": "<the human's requested change>"
+}
+```
+
+In that case, start from `prior` and apply `revision` faithfully: change only
+what the human asked for and keep the rest of the problem and steps stable.
+Return the same `{problem, steps}` shape (the full updated result, not a diff).
+
 ## Output JSON
 
 Return only valid JSON:

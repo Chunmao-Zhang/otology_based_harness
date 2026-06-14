@@ -4351,6 +4351,20 @@ body.dark-theme .run-model-output code {
   line-height: 1.55;
 }
 
+/* Compact hero used at the top of the activities-panel tabs */
+.schema-hero.panel-hero {
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 18px 20px;
+}
+.schema-hero.panel-hero h2 { font-size: 21px; max-width: none; line-height: 1.12; }
+.schema-hero.panel-hero p { font-size: 13px; margin-top: 8px; }
+.schema-hero.panel-hero .import-steps { min-width: 200px; }
+.schema-hero.panel-hero .import-steps span { padding: 8px 11px; font-size: 12px; }
+@media (max-width: 1180px) {
+  .schema-hero.panel-hero .import-steps { min-width: 100%; }
+}
+
 .schema-section-title {
   display: flex;
   align-items: center;
@@ -6232,8 +6246,15 @@ textarea#message-input.chat-input:focus-visible,
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--panel-strong);
-  padding: 16px;
+  padding: 18px;
   margin-bottom: 16px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.onto-section:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, .06);
 }
 
 .onto-section-head {
@@ -6241,10 +6262,26 @@ textarea#message-input.chat-input:focus-visible,
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
-.onto-section-head h3 { margin: 0; font-size: 14px; color: var(--ink); }
+.onto-section-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.onto-section-head h3::before {
+  content: "";
+  width: 4px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--accent);
+}
 
 .onto-subhead {
   margin: 14px 0 4px;
@@ -6351,19 +6388,148 @@ textarea#message-input.chat-input:focus-visible,
 .onto-badge.confirmed { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
 .onto-badge.none { background: var(--line); color: var(--ink-muted); }
 
-.onto-cell-input {
+.onto-cell-input,
+.onto-cell-select {
   width: 100%;
   font: inherit;
   font-size: 13px;
   color: var(--ink);
-  background: transparent;
-  border: 1px solid transparent;
+  background: var(--panel-strong);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  padding: 4px 6px;
+  padding: 6px 8px;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
 }
 
-.onto-cell-input:hover { border-color: var(--line-strong); }
-.onto-cell-input:focus { outline: none; border-color: var(--accent); background: var(--panel-strong); }
+.onto-cell-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M2.5 4.5 6 8l3.5-3.5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 26px;
+  cursor: pointer;
+}
+
+.onto-cell-input:hover,
+.onto-cell-select:hover { border-color: var(--accent); }
+.onto-cell-input:focus,
+.onto-cell-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--panel-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.onto-attr-cell { color: var(--ink-soft); font-size: 12.5px; }
+
+/* Row delete control in editable schema tables */
+.onto-row-action { width: 1%; text-align: center; white-space: nowrap; }
+.onto-row-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  color: var(--ink-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.onto-row-del:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Editable schema-table blocks (modal) */
+.onto-table-block { margin-top: 14px; }
+.onto-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.onto-table-head h4 { margin: 0; font-size: 13px; font-weight: 700; color: var(--ink); }
+.onto-add-row {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px dashed var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.onto-add-row:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); border-style: solid; }
+
+.schema-edit-hint {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+}
+.schema-edit-hint strong { color: var(--accent-strong); }
+
+/* Two edit-mode tabs */
+.schema-edit-modes {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.schema-mode-btn {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.schema-mode-btn:hover { color: var(--ink); }
+.schema-mode-btn.active {
+  background: var(--panel-strong);
+  color: var(--accent-strong);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .12);
+}
+
+/* Suggest-to-agent mode */
+.schema-suggest { display: flex; flex-direction: column; gap: 12px; }
+.schema-suggest-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--panel-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  resize: vertical;
+  min-height: 110px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.schema-suggest-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 
 .onto-rel-type { font-size: 11px; color: var(--ink-muted); font-family: var(--font-mono); }
 
