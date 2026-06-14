@@ -69,7 +69,16 @@ stored once and directed, scan `relations.csv` to follow it in either direction
      (filter rows, join entities to relation rows on the `(entity_name,
      entity_type)` composite key, intersect relation edges, etc.).
    - Build `result` as the list of matching rows (each a dict of the fields the
-     question asks to output). `answer` is a one-sentence Chinese summary.
+     question asks to output). Make `result` **comprehensive and report-ready**:
+     include every row and every field the question asks about so the coordinator
+     can assemble a complete report from it alone — do not trim it down to a
+     single example. When the question asks to "整理/汇总/梳理/compile/summarize"
+     several facets (e.g. basic info, a list of works, milestones over time),
+     emit rows covering **all** those facets (you may tag each row with which
+     facet/section it belongs to), grouped logically, so nothing the user asked
+     for is missing from `result`. Still derive every value from the data files —
+     comprehensive does not mean invented. `answer` is a one-sentence Chinese
+     summary (the headline finding).
    - End with exactly this persistence block (the keys `ok`, `answer`, `result`
      are mandatory — never rename them, never omit `ok`):
 

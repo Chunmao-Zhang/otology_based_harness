@@ -1786,6 +1786,25 @@ async def _send_assistant_final(websocket: Any, session: dict[str, Any], message
         pass
 
 
+async def _send_gate_activity(websocket: Any, session: dict[str, Any], activity: dict[str, Any]) -> None:
+    # Push the gate's stage event (already persisted) and the refreshed stage
+    # strip; on a dropped socket the client recovers both via `history`.
+    try:
+        await websocket.send_text(json.dumps({"type": "activity", "message": activity}, ensure_ascii=False))
+        await websocket.send_text(json.dumps(
+            {
+                "type": "stage",
+                "stage": activity.get("stage", ""),
+                "status": activity.get("status", "waiting"),
+                "label": stage_label(activity.get("stage", "")),
+                "stages": session["stages"],
+            },
+            ensure_ascii=False,
+        ))
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
 async def _stream_run(websocket: Any, session_id: str, runner, on_done) -> None:
     """Run one coordinator segment in the executor, forward its stream/activity/
     stage events to the client, and hand the final message to ``on_done``.
@@ -2261,6 +2280,10 @@ async def _finalize_problem_gate(websocket: Any, session_id: str, final: str) ->
             return None
         return "This run produced no reply. Please retry."
     set_stage(session, "confirm_problem", "waiting")
+    # Emit a stage event so the human gate becomes its own timeline card
+    # (the orchestration timeline only renders steps backed by a stage event).
+    gate_activity = stage_activity("confirm_problem", "waiting")
+    session["messages"].append(gate_activity)
     session["clarification"] = {**clarification, "status": "waiting"}
     message = ui_message(
         "assistant",
@@ -2270,6 +2293,7 @@ async def _finalize_problem_gate(websocket: Any, session_id: str, final: str) ->
     )
     session["messages"].append(message)
     STORE.save(session)
+    await _send_gate_activity(websocket, session, gate_activity)
     await _send_assistant_final(websocket, session, message)
     return None
 
@@ -2294,6 +2318,10 @@ async def _finalize_schema_gate(websocket: Any, session_id: str, final: str) -> 
         return "The schema could not be built. Please retry."
     open_schema_gate(run_dir)
     set_stage(session, "confirm_schema", "waiting")
+    # Emit a stage event so the human gate becomes its own timeline card
+    # (the orchestration timeline only renders steps backed by a stage event).
+    gate_activity = stage_activity("confirm_schema", "waiting")
+    session["messages"].append(gate_activity)
     # The markers below let the frontend render the editable schema-review card.
     message = ui_message(
         "assistant",
@@ -2304,6 +2332,7 @@ async def _finalize_schema_gate(websocket: Any, session_id: str, final: str) -> 
     )
     session["messages"].append(message)
     STORE.save(session)
+    await _send_gate_activity(websocket, session, gate_activity)
     await _send_assistant_final(websocket, session, message)
     return None
 
