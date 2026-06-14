@@ -111,6 +111,30 @@ Return only valid JSON:
 - Each relation value is a list of `_id`s of instances you also emit, so both
   endpoints of every relation row exist in `instances.json`.
 
+## Completeness for multi-hop / join questions (critical)
+
+When the question is a join over several hops (e.g. "a founder previously worked
+at another company" **and** "the two companies share an investor"), the answer
+only exists if every connecting fact is in `instances.json`. Under-extraction
+silently makes the question unanswerable. Therefore:
+
+- Extract **every** entity the evidence supports that participates in the
+  question's join — not a convenient subset. If the evidence names a founder's
+  prior company (e.g. a person who left company B to found company A), create
+  **both** companies as instances and set `previously_worked_at` to the prior
+  company. Never leave `previously_worked_at` empty when the evidence names a
+  prior employer.
+- For **every** company, include **every** investor the evidence names (not just
+  one or two), and emit each as an `InvestmentInstitution` instance. A shared
+  investor can only be found if both companies list it.
+- Treat a prior-employer company exactly like any other company: give it its
+  `sub_domain`, `headquarters`, and `investors` from the evidence so it can take
+  part in the shared-investor check.
+- Before returning, re-read the evidence you have and confirm that for each
+  founder→prior-company link and each company→investor link the evidence
+  supports, the corresponding relation row exists in your `instances.json`. Fill
+  any you missed.
+
 ## Evidence Reuse and Supplementary Search
 
 - Read the evidence manifest first and reuse its registered sources: uploads via `source_reader` / `evidence_retriever`, and persisted web evidence from the `evidence_path` files under `intermediate/web_evidence/`.
