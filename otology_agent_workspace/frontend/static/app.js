@@ -77,6 +77,7 @@
     liveStream: {},
     toolKeys: {},
     runStartedAt: 0,
+    pendingOptimistic: [],
   };
 
   // ── Agent identity: coordinator vs subagents ─────────────────────────────
@@ -131,7 +132,7 @@
       : '已完成全流程编排';
     const narration = (live.output || live.thinking || '').trim();
     const narrHtml = (orchestrating && narration)
-      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">主控决策</span>${formatMarkdown(narration)}</div>`
+      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">主控决策</span><div class="coordinator-narration-body">${formatMarkdown(narration)}</div></div>`
       : '';
     return `
       <div class="coordinator-banner${orchestrating ? ' active' : ''}">
@@ -405,6 +406,50 @@
     });
   }
 
+  function cssEscapeId(value) {
+    return (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+
+  // Incrementally update the live coordinator narration and the active subagent's
+  // reasoning/output panes without rebuilding the whole message tree. Returns
+  // false when the live group is not in the DOM yet so the caller can fall back
+  // to a full render. Re-rendering everything (markdown + syntax highlighting)
+  // on every streamed token is what exhausted the browser renderer on long runs.
+  function updateLiveStreamDom() {
+    const root = el.messages.querySelector('.stage-pipeline-message.orchestration');
+    if (!root) return false;
+    const live = state.liveStream || {};
+    const coord = live[COORDINATOR_LANE] || {};
+    const narration = (coord.output || coord.thinking || '').trim();
+    const banner = root.querySelector('.coordinator-banner');
+    if (banner) {
+      let narrEl = banner.querySelector('.coordinator-narration');
+      if (narration) {
+        if (!narrEl) {
+          narrEl = document.createElement('div');
+          narrEl.className = 'coordinator-narration';
+          narrEl.innerHTML = '<span class="coordinator-narration-label">主控决策</span><div class="coordinator-narration-body"></div>';
+          banner.appendChild(narrEl);
+        }
+        const body = narrEl.querySelector('.coordinator-narration-body') || narrEl;
+        body.innerHTML = formatMarkdown(narration);
+      } else if (narrEl) {
+        narrEl.remove();
+      }
+    }
+    Object.keys(live).forEach((stage) => {
+      if (stage === COORDINATOR_LANE) return;
+      const node = root.querySelector(`.task-node[data-stage="${cssEscapeId(stage)}"]`);
+      if (!node) return;
+      const data = live[stage] || {};
+      const rEl = node.querySelector('.run-reasoning-output');
+      if (rEl) rEl.innerHTML = data.thinking ? escapeHtml(sanitizeDisplayText(data.thinking)) : '<span class="live-placeholder">Waiting for live model update…</span>';
+      const oEl = node.querySelector('.run-model-output');
+      if (oEl) oEl.innerHTML = data.output ? formatMarkdown(data.output) : '<span class="live-placeholder">Waiting for model output…</span>';
+    });
+    return true;
+  }
+
   function handleWsEvent(payload) {
     if (payload.type === 'history') {
       const session = payload.session || {};
@@ -416,6 +461,16 @@
       return;
     }
     if (payload.type === 'message') {
+      // Skip the server echo of a user message we already showed optimistically,
+      // so it does not appear twice.
+      const msg = payload.message || {};
+      if (msg.role === 'user') {
+        const idx = state.pendingOptimistic.indexOf(String(msg.content || '').trim());
+        if (idx !== -1) {
+          state.pendingOptimistic.splice(idx, 1);
+          return;
+        }
+      }
       state.messages.push(payload.message);
       renderMessages();
       renderSessionRail();
@@ -425,6 +480,11 @@
       state.liveStream = {};
       state.forceScroll = true;
       setRunning(true, 'The agent is working on your request…');
+      // Render immediately so the coordinator banner shows up at once instead of
+      // leaving the user staring at a blank screen for several seconds while the
+      // main agent thinks before its first delegation.
+      renderMessages();
+      renderStageStrip();
       return;
     }
     if (payload.type === 'stage') {
@@ -450,7 +510,9 @@
           thinking: payload.thinking || '',
           output: payload.output || '',
         };
-        renderMessages({ preserveScroll: true });
+        // Targeted in-place update; only fall back to a full render if the live
+        // group is not on screen yet.
+        if (!updateLiveStreamDom()) renderMessages({ preserveScroll: true });
       }
       return;
     }
@@ -547,8 +609,8 @@
     return content;
   }
 
-  async function sendViaHttp(payload) {
-    const optimisticContent = pushOptimisticUserMessage(payload);
+  async function sendViaHttp(payload, { optimistic = true } = {}) {
+    const optimisticContent = optimistic ? pushOptimisticUserMessage(payload) : '';
     let skippedOptimisticEcho = false;
     setRunning(true, 'The agent is working on your request…');
     try {
@@ -585,6 +647,12 @@
     const uploadIds = Array.from(state.selectedUploads);
     const payload = { type: 'chat', content, upload_ids: uploadIds };
     if (state.wsReady) {
+      // Show the user's message and the working state at once — do not wait for
+      // the server to echo it back, which is what made the UI look frozen for
+      // several seconds after asking a question.
+      const content2 = pushOptimisticUserMessage(payload);
+      if (content2) state.pendingOptimistic.push(content2);
+      setRunning(true, 'The agent is working on your request…');
       state.ws.send(JSON.stringify(payload));
     } else {
       sendViaHttp(payload);
@@ -599,10 +667,14 @@
     if (state.running) return;
     const payload = { type: 'chat', content: text, upload_ids: [] };
     state.forceScroll = true;
+    // A confirmation reply: the server posts its own localized acknowledgement
+    // bubble, so don't show an optimistic one (it would duplicate). Still flip
+    // to the working state at once so the click gives immediate feedback.
     if (state.wsReady) {
+      setRunning(true, 'The agent is working on your request…');
       state.ws.send(JSON.stringify(payload));
     } else {
-      sendViaHttp(payload);
+      sendViaHttp(payload, { optimistic: false });
     }
   }
 
@@ -1036,7 +1108,7 @@
     `;
     if (isDone) {
       return `
-        <section class="task-node done ${expanded ? 'expanded' : 'folded'}">
+        <section class="task-node done ${expanded ? 'expanded' : 'folded'}" data-stage="${escapeHtml(card.id)}">
           <div class="run-card ontology-task-card complete">
             <div class="run-card-head completed-task-head">
               <div class="task-node-title">
@@ -1058,7 +1130,7 @@
     }
     const workingLabel = isWaiting ? '等待确认' : `${escapeHtml(stageAgent(card.id).label)} 执行中`;
     return `
-      <section class="task-node ${escapeHtml(status)} expanded">
+      <section class="task-node ${escapeHtml(status)} expanded" data-stage="${escapeHtml(card.id)}">
         <div class="run-card ontology-task-card working">
           <div class="run-card-head">
             <div class="task-node-title">
@@ -1097,7 +1169,18 @@
   }
 
   function renderStagePipeline(cards, isLatest, groupKey) {
-    if (!cards.length) return '';
+    if (!cards.length) {
+      // A segment is running but its first task card has not landed yet: still
+      // show the coordinator banner so feedback is immediate (the coordinator's
+      // own reasoning streams on the __coordinator__ lane).
+      if (isLatest && state.running) {
+        return `
+        <article class="message event stage-pipeline-message orchestration">
+          ${coordinatorBannerHtml(true)}
+        </article>`;
+      }
+      return '';
+    }
     // The current run stays fully expanded with the live tool bar.
     if (isLatest) {
       return `
@@ -1147,11 +1230,11 @@
   function buildMessageTimeline(messages) {
     const items = [];
     let eventBuffer = [];
-    const flushEvents = () => {
+    const flushEvents = (allowEmpty = false) => {
       if (!eventBuffer.length) return;
       const cards = buildStageCards(eventBuffer);
-      if (cards.length) {
-        const groupKey = cards.map((card) => card.id).join('-');
+      if (cards.length || (allowEmpty && state.running)) {
+        const groupKey = cards.length ? cards.map((card) => card.id).join('-') : 'live';
         items.push({ role: 'pipeline', cards, groupKey });
       }
       eventBuffer = [];
@@ -1167,8 +1250,8 @@
       flushEvents();
       items.push(message);
     });
-    flushEvents();
-    if (!items.some((item) => item.role === 'pipeline') && (state.stages || []).some((stage) => stage.status !== 'pending')) {
+    flushEvents(true);
+    if (!items.some((item) => item.role === 'pipeline') && (state.running || (state.stages || []).some((stage) => stage.status !== 'pending'))) {
       items.push({ role: 'pipeline', cards: buildStageCards([]), groupKey: 'live' });
     }
     // Only the final pipeline group (the current run) may show live "working"
@@ -1214,10 +1297,12 @@
     const steps = (clarification.steps || []).map((step) => String(step || '').trim()).filter(Boolean);
     if (!problem || !steps.length || state.running) return;
     const payload = { type: 'confirm_problem', problem, steps };
+    state.forceScroll = true;
     if (state.wsReady) {
+      setRunning(true, 'The agent is working on your request…');
       state.ws.send(JSON.stringify(payload));
     } else {
-      sendViaHttp(payload);
+      sendViaHttp(payload, { optimistic: false });
     }
   }
 

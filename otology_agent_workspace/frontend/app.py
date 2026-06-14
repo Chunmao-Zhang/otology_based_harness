@@ -39,6 +39,7 @@ from harness.ontology.data_extractor import (
     schema_outline,
     validate_instances,
 )
+from harness.ontology.json_contract import extract_json_object
 from harness.ontology.schema_builder import write_draft_schema
 from harness.ontology.schema_judge import mechanical_schema_check
 from harness.ontology.schema_utils import parse_schema
@@ -60,14 +61,21 @@ _AGENT_LOCK = threading.Lock()
 _AGENT_SINGLETON = None
 _AGENT_CACHE: dict[str, Any] = {}
 
-# Autonomous mode: the ontology_coordinator LLM drives the entire flow by
-# delegating to its six subagents with the `task` tool. There are no human
-# confirmation gates — each pipeline stage maps 1:1 to the subagent that owns it.
+# Human-gated mode: the ontology_coordinator LLM still drives the whole flow by
+# delegating to its six subagents with the `task` tool (so the UI keeps showing
+# which subagent is doing which task), but the backend splits the run into three
+# self-contained segments separated by two human confirmation gates:
+#   1. after the problem is clarified  -> confirm_problem (review/edit problem+steps)
+#   2. after the schema is built/judged -> confirm_schema  (review/edit schema)
+# The two confirm_* stages are gates, not subagents; every other stage maps 1:1
+# to the subagent that owns it.
 PIPELINE_STAGES = [
     {"id": "clarify", "label": "Clarify Question"},
+    {"id": "confirm_problem", "label": "Confirm Question"},
     {"id": "evidence", "label": "Collect Evidence"},
     {"id": "schema_build", "label": "Build Schema"},
     {"id": "schema_judge", "label": "Judge Schema"},
+    {"id": "confirm_schema", "label": "Confirm Schema"},
     {"id": "extract", "label": "Extract Data"},
     {"id": "solve", "label": "Solve & Answer"},
 ]
@@ -98,18 +106,22 @@ AGENT_LABELS = {
 
 STAGE_RUNNING_TEXT = {
     "clarify": "Analyzing and clarifying the question…",
+    "confirm_problem": "Waiting for you to confirm the clarified problem and steps…",
     "evidence": "Gathering evidence (reading uploads, searching the web if needed)…",
     "schema_build": "Building the ontology schema…",
     "schema_judge": "Judging whether the schema can answer the question…",
+    "confirm_schema": "Waiting for you to confirm the ontology schema…",
     "extract": "Extracting data against the confirmed schema…",
     "solve": "Executing code in the workspace to solve the question…",
 }
 
 STAGE_ACTIVITY_TEXT = {
     "clarify": "Clarifying the problem statement and solution plan.",
+    "confirm_problem": "Problem clarification is ready for your confirmation.",
     "evidence": "Collecting uploaded and public evidence as needed.",
     "schema_build": "Building an editable ontology schema from the evidence.",
     "schema_judge": "Checking whether the current schema can answer the question.",
+    "confirm_schema": "Schema is ready and waiting for your confirmation.",
     "extract": "Extracting instances, attributes, and relations with the confirmed schema.",
     "solve": "Solving the question from the extracted workspace data.",
 }
@@ -802,46 +814,185 @@ def get_cached_coordinator_agent():
     return _AGENT_SINGLETON
 
 
-def _autonomous_message(
-    question: str, upload_paths: list[str], workspace_dir: str, run_id: str
-) -> str:
-    """Build the single user message that puts the coordinator in autonomous mode.
+# Only the tail of the live reasoning/answer buffers is ever sent to the client.
+# A full run can stream many thousands of model-thinking tokens per step; sending
+# (and re-rendering) the whole growing buffer on every delta is what made long
+# runs blow up the browser renderer. Capping the payload keeps it bounded.
+STREAM_TAIL_CHARS = 6000
 
-    Mirrors ``harness/ontology/pipeline.py``: the coordinator drives the entire
-    workflow itself by delegating to its subagents with the ``task`` tool, with
-    no human confirmation gates."""
-    inputs = {
-        "question": question,
-        "upload_paths": upload_paths,
-        "workspace_dir": workspace_dir,
-        "run_id": run_id,
-        "autonomous": True,
-    }
+
+def _tail(text: str, limit: int = STREAM_TAIL_CHARS) -> str:
+    if not isinstance(text, str) or len(text) <= limit:
+        return text or ""
+    return "…" + text[-limit:]
+
+
+def _inputs_block(payload: dict[str, Any]) -> str:
+    return "Inputs:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _segment_message_clarify(question: str, upload_paths: list[str]) -> str:
+    """Segment 1 — clarify only, then stop for the problem-confirmation gate."""
+    payload = {"question": question, "upload_paths": upload_paths}
     return (
-        "You are running in autonomous backend mode: no human is available to "
-        "confirm the gates, so you must drive the COMPLETE ontology workflow end "
-        "to end yourself by delegating to your subagents with the `task` tool, "
-        "and only then give the final answer.\n\n"
-        "Follow your Required Workflow in order. Do not pause to ask the user to "
-        "confirm the clarified problem or the schema; proceed automatically through "
-        "every step. Make sure `workspace_solver` has written "
-        f"`{workspace_dir}/intermediate/solver_result.json` before you produce the "
-        "final answer.\n\nInputs:\n"
-        + json.dumps(inputs, ensure_ascii=False, indent=2)
+        "You are running a HUMAN-GATED ontology workflow. Run ONLY Step 1 "
+        "(problem clarification) now, then STOP for human confirmation. Do NOT "
+        "collect evidence, build a schema, extract data, or solve yet.\n\n"
+        "Delegate to the `problem_clarifier` subagent with the `task` tool, "
+        "passing the inputs below as JSON. When it returns "
+        '{"problem": "...", "steps": [...]}, output EXACTLY that JSON object as '
+        "your final message — no prose before or after it, and no other subagent "
+        "calls. A human will review and may edit the problem and steps before you "
+        "continue.\n\n"
+        + _inputs_block(payload)
         + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
     )
 
 
-def run_coordinator_autonomous(
-    question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
+def _segment_message_schema(
+    problem: str, steps: list[str], upload_paths: list[str], workspace_dir: str, run_id: str
 ) -> str:
-    """Drive one question with the pure-LLM ontology_coordinator.
+    """Segment 2 — evidence + schema build/judge, then stop for the schema gate."""
+    payload = {
+        "question": problem,
+        "upload_paths": upload_paths,
+        "workspace_dir": workspace_dir,
+        "run_id": run_id,
+    }
+    steps_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps)) or "(none provided)"
+    return (
+        "You are continuing a HUMAN-GATED ontology workflow. The human has "
+        "CONFIRMED the problem statement and solution steps below — treat them as "
+        "final and do NOT re-clarify them.\n\n"
+        "Run Step 2 (`evidence_collector`), Step 3 (`schema_builder`), then Step 4 "
+        "(`schema_judger`) by delegating with the `task` tool. If the judger says "
+        "the schema is not answerable, call `schema_builder` once more to patch and "
+        "re-save, then judge again. After at most one patch, STOP. Do NOT extract "
+        "data or solve — a human will review and may edit the schema first.\n\n"
+        "When the schema is saved and validated, output a short JSON object "
+        '{"schema_outline": [...], "confirmed_schema_path": "<path schema_builder '
+        'returned>"} as your final message. Do not include draft code, answerability '
+        "judgments, evidence counts, or file paths in any user-facing prose.\n\n"
+        f"Confirmed problem:\n{problem}\n\nConfirmed steps:\n{steps_text}\n\n"
+        + _inputs_block(payload)
+        + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
+    )
 
-    The coordinator LLM owns the whole flow: it delegates to each subagent with
-    the ``task`` tool, and the backend only streams what happens. There is no
-    Python state machine, no hardcoded step routing, no fallback. The UI events
-    carry an explicit coordinator-vs-subagent identity so a viewer can see which
-    agent is doing which task:
+
+def _segment_message_solve(
+    problem: str,
+    upload_paths: list[str],
+    workspace_dir: str,
+    run_id: str,
+    confirmed_schema_path: str,
+    schema_outline_data: list[dict[str, Any]],
+    evidence_manifest_path: str,
+    instances_path: str,
+) -> str:
+    """Segment 3 — extract + solve against the human-confirmed schema."""
+    payload = {
+        "question": problem,
+        "upload_paths": upload_paths,
+        "workspace_dir": workspace_dir,
+        "run_id": run_id,
+        "confirmed_schema_path": confirmed_schema_path,
+        "schema_outline": schema_outline_data,
+        "evidence_manifest_path": evidence_manifest_path,
+        "instances_path": instances_path,
+    }
+    return (
+        "You are COMPLETING a HUMAN-GATED ontology workflow. The human has "
+        "CONFIRMED (and may have EDITED) the ontology schema. The final schema is "
+        "already saved at `confirmed_schema_path` below — DO NOT rebuild, re-judge, "
+        "or modify the schema, and DO NOT re-run clarification or evidence "
+        "collection.\n\n"
+        "Run Step 5 (`data_extractor`) using the confirmed schema and the "
+        "`schema_outline` below (pass it through verbatim), then Step 6 "
+        "(`workspace_solver`). Make sure `workspace_solver` writes "
+        f"`{workspace_dir}/intermediate/solver_result.json` before you answer. "
+        "Then give the final answer to the user in concise Chinese — the direct "
+        "answer only.\n\n"
+        f"Confirmed problem:\n{problem}\n\n"
+        + _inputs_block(payload)
+        + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
+    )
+
+
+def extract_clarification(text: str) -> dict[str, Any] | None:
+    """Pull a structured {problem, steps} out of a clarification reply."""
+    try:
+        data = extract_json_object(text)
+        problem = data.get("problem")
+        steps = data.get("steps")
+        if isinstance(problem, str) and problem.strip() and isinstance(steps, list):
+            cleaned = [str(item).strip() for item in steps if str(item).strip()]
+            if cleaned:
+                return {"problem": problem.strip(), "steps": cleaned}
+    except Exception:
+        pass
+    problem = ""
+    steps: list[str] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        match = re.match(r"^\*{0,2}(?:Question|问题|核心问题)\s*[:：]\*{0,2}\s*(.+)$", stripped)
+        if match and not problem:
+            problem = match.group(1).strip()
+            continue
+        match = re.match(r"^\d+[.、)]\s*(.+)$", stripped)
+        if match:
+            steps.append(match.group(1).strip())
+    if problem and steps:
+        return {"problem": problem, "steps": steps}
+    return None
+
+
+def open_schema_gate(run_dir: Path) -> None:
+    """Present the freshly built schema as an editable DRAFT for the schema gate.
+
+    ``save_schema`` writes both ``draft_schema.py`` and ``confirmed_schema.py``;
+    removing the confirmed copy makes ``/api/schema`` serve the draft so edits via
+    Schema Studio round-trip correctly until the human confirms."""
+    confirmed = run_dir / "concepts" / "confirmed_schema.py"
+    draft = run_dir / "concepts" / "draft_schema.py"
+    if confirmed.exists():
+        if not draft.exists():
+            draft.write_text(confirmed.read_text(encoding="utf-8"), encoding="utf-8")
+        confirmed.unlink()
+
+
+def finalize_schema(run_dir: Path) -> str:
+    """Promote the (possibly human-edited) draft to the confirmed schema and
+    rebuild the workspace so extraction runs against exactly what the user saw.
+
+    Returns the confirmed schema path."""
+    concepts = run_dir / "concepts"
+    draft = concepts / "draft_schema.py"
+    confirmed = concepts / "confirmed_schema.py"
+    if draft.exists():
+        confirm_schema(draft, confirmed)
+    if confirmed.exists():
+        build_workspace(str(run_dir), str(confirmed))
+    return str(confirmed)
+
+
+def _prepare_run_dir(run_dir: Path) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for sub in ("concepts", "data", "src", "intermediate", "intermediate/web_evidence"):
+        (run_dir / sub).mkdir(parents=True, exist_ok=True)
+    os.environ["HARNESS_ROOT"] = str(ROOT)
+    os.environ["HARNESS_AGENT_ID"] = AGENT_ID
+    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
+
+
+def _drive_coordinator(message: str, thread_id: str, run_dir: Path, emit) -> str:
+    """Stream one coordinator segment and return its final, tool-call-free message.
+
+    The coordinator LLM owns the flow within a segment: it delegates to subagents
+    with the ``task`` tool, and the backend only streams what happens. There is no
+    Python state machine, hardcoded routing, or fallback — the segment boundaries
+    (the two human gates) are enforced by *which* message the backend hands the
+    coordinator, not by parsing its prose. The UI events carry an explicit
+    coordinator-vs-subagent identity so a viewer can see which agent is doing what:
 
     - the coordinator's own reasoning streams on the virtual ``__coordinator__``
       lane (it is the orchestrator, not a stage);
@@ -852,19 +1003,8 @@ def run_coordinator_autonomous(
     from langchain_core.messages import HumanMessage
 
     agent, _agent_cfg = get_cached_coordinator_agent()
-    # Isolate this question in its own run directory (evidence, schema, data) so
-    # the coordinator and its subagents share one workspace (ontology tools key
-    # off HARNESS_RUN_DIR), and create the canonical run subdirectories up front.
-    run_dir.mkdir(parents=True, exist_ok=True)
-    for sub in ("concepts", "data", "src", "intermediate", "intermediate/web_evidence"):
-        (run_dir / sub).mkdir(parents=True, exist_ok=True)
-    os.environ["HARNESS_ROOT"] = str(ROOT)
-    os.environ["HARNESS_AGENT_ID"] = AGENT_ID
-    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
-
+    _prepare_run_dir(run_dir)
     run_id = run_dir.name
-    workspace_dir = vrun_for(run_dir)
-    message = _autonomous_message(question, upload_paths, workspace_dir, run_id)
 
     final_content = ""
     current_stage = ""
@@ -890,7 +1030,7 @@ def run_coordinator_autonomous(
             return
         last_emit_at = now
         last_emit_len = size
-        emit({"type": "stream", "stage": lane, "thinking": thinking_buf, "output": output_buf})
+        emit({"type": "stream", "stage": lane, "thinking": _tail(thinking_buf), "output": _tail(output_buf)})
 
     config = {
         "configurable": {"thread_id": thread_id or f"{run_id}:{AGENT_ID}"},
@@ -994,6 +1134,44 @@ def run_coordinator_autonomous(
     return final_content
 
 
+def run_segment_clarify(
+    question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
+) -> str:
+    """Segment 1: clarify the problem, then stop for the problem gate."""
+    message = _segment_message_clarify(question, upload_paths)
+    return _drive_coordinator(message, thread_id, run_dir, emit)
+
+
+def run_segment_schema(
+    problem: str, steps: list[str], upload_paths: list[str], thread_id: str, run_dir: Path, emit
+) -> str:
+    """Segment 2: collect evidence + build/judge schema, then stop for the schema gate."""
+    message = _segment_message_schema(problem, steps, upload_paths, vrun_for(run_dir), run_dir.name)
+    return _drive_coordinator(message, thread_id, run_dir, emit)
+
+
+def run_segment_solve(
+    problem: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
+) -> str:
+    """Segment 3: extract + solve against the human-confirmed schema, then answer."""
+    confirmed = run_dir / "concepts" / "confirmed_schema.py"
+    try:
+        outline = schema_outline(str(confirmed)) if confirmed.exists() else []
+    except Exception:
+        outline = []
+    message = _segment_message_solve(
+        problem,
+        upload_paths,
+        vrun_for(run_dir),
+        run_dir.name,
+        str(confirmed),
+        outline,
+        str(run_dir / "intermediate" / "evidence_manifest.json"),
+        str(run_dir / "data" / "instances.json"),
+    )
+    return _drive_coordinator(message, thread_id, run_dir, emit)
+
+
 def _accumulate_stream(chunk: Any, thinking_buf: str, output_buf: str) -> tuple[str, str]:
     """Fold one streamed model chunk into the live thinking/output buffers.
 
@@ -1034,14 +1212,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         while True:
             raw = await websocket.receive_text()
             payload = json.loads(raw)
-            if payload.get("type") == "chat":
+            ptype = payload.get("type")
+            if ptype == "chat":
                 await handle_chat(
                     websocket,
                     session["id"],
                     str(payload.get("content", "")),
                     list(payload.get("upload_ids", []) or []),
                 )
-            elif payload.get("type") == "history":
+            elif ptype == "confirm_problem":
+                await handle_confirm_problem(
+                    websocket,
+                    session["id"],
+                    str(payload.get("problem", "")),
+                    [str(item) for item in (payload.get("steps") or [])],
+                )
+            elif ptype == "history":
                 await websocket.send_text(
                     json.dumps({"type": "history", "session": STORE.get(session["id"])}, ensure_ascii=False)
                 )
@@ -1049,64 +1235,61 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         return
 
 
-async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids: list[str]) -> None:
-    content = content.strip()
-    if not content:
-        return
+def stage_status(session: dict[str, Any], stage_id: str) -> str:
+    for stage in session.get("stages", []):
+        if stage.get("id") == stage_id:
+            return stage.get("status", "")
+    return ""
 
-    session = STORE.get(session_id)
-    upload_names = [Path(str(item)).name for item in upload_ids if str(item).strip()]
-    user_message = ui_message("user", content, uploads=upload_names)
-    session["messages"].append(user_message)
-    if sum(1 for item in session["messages"] if item.get("role") == "user") == 1:
-        session["title"] = content[:42] + ("..." if len(content) > 42 else "")
-    STORE.save(session)
-    await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
-    await websocket.send_text(json.dumps({"type": "run_start"}, ensure_ascii=False))
-    activity_seen: set[str] = set()
-    start_activity = ui_message(
-        "event",
-        "Question received. The ontology QA pipeline is starting.",
-        kind="run_start",
-        title="Start processing",
-        status="running",
-    )
-    session["messages"].append(start_activity)
-    STORE.save(session)
-    await websocket.send_text(json.dumps({"type": "activity", "message": start_activity}, ensure_ascii=False))
 
-    agent_input = content
-    paths: list[str] = []
+def resolve_upload_paths(session_id: str, session: dict[str, Any], upload_names: list[str]) -> list[str]:
     if upload_names:
         upload_root = Path("otology_agent_workspace/data/uploads") / safe_session_id(session_id)
         paths = [str(upload_root / name) for name in upload_names]
         session["upload_paths"] = paths
         STORE.save(session)
-        agent_input = f"{content}\n\nupload_paths: {json.dumps(paths, ensure_ascii=False)}"
-    else:
-        stored_paths = session.get("upload_paths", [])
-        if isinstance(stored_paths, list):
-            paths = [str(item) for item in stored_paths if str(item).strip()]
+        return paths
+    stored = session.get("upload_paths", [])
+    return [str(item) for item in stored if str(item).strip()] if isinstance(stored, list) else []
 
+
+async def _emit_run_start(websocket: Any, session_id: str, note: str) -> None:
+    """Tell the client a working segment has begun (resets the live banner) and
+    log a start-of-run activity so the coordinator banner shows immediately."""
+    await websocket.send_text(json.dumps({"type": "run_start"}, ensure_ascii=False))
+    session = STORE.get(session_id)
+    start_activity = ui_message(
+        "event", note, kind="run_start", title="Start processing", status="running",
+    )
+    session["messages"].append(start_activity)
+    STORE.save(session)
+    await websocket.send_text(json.dumps({"type": "activity", "message": start_activity}, ensure_ascii=False))
+
+
+async def _send_assistant_final(websocket: Any, session: dict[str, Any], message: dict[str, Any]) -> None:
+    await websocket.send_text(json.dumps(
+        {"type": "assistant_final", "message": message, "stages": session["stages"]},
+        ensure_ascii=False,
+    ))
+
+
+async def _stream_run(websocket: Any, session_id: str, runner, on_done) -> None:
+    """Run one coordinator segment in the executor, forward its stream/activity/
+    stage events to the client, and hand the final message to ``on_done``.
+
+    ``runner(emit) -> str`` performs the (blocking) segment; ``on_done(session_id,
+    final) -> str | None`` finalizes it (persists + sends assistant_final) and
+    returns an error string if the segment produced nothing usable."""
+    activity_seen: set[str] = set()
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     def emit(event: dict[str, Any]) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, event)
 
-    def run_agent_thread() -> None:
+    def run_thread() -> None:
         try:
-            # Each question gets a fresh run directory so the coordinator and its
-            # subagents always write into a clean workspace (write_file refuses to
-            # overwrite) and the Workbench reads the latest run. Persist the run_id
-            # before invoking so the artifact endpoints resolve to this run.
-            run_id = f"sess-{safe_session_id(session_id)}-{int(time.time() * 1000)}"
-            current = STORE.get(session_id)
-            current["run_id"] = run_id
-            STORE.save(current)
-            final = run_coordinator_autonomous(
-                content, paths, f"{run_id}:{AGENT_ID}", RUNS_DIR / run_id, emit
-            )
+            final = runner(emit)
             emit({"type": "_done", "final": final})
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a friendly error.
             import traceback
@@ -1114,7 +1297,7 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
             sys.stderr.flush()
             emit({"type": "_error", "error": f"{type(exc).__name__}: {exc}"})
 
-    future = loop.run_in_executor(EXECUTOR, run_agent_thread)
+    future = loop.run_in_executor(EXECUTOR, run_thread)
     run_error: str | None = None
 
     try:
@@ -1125,29 +1308,17 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                 run_error = "The run timed out. Please retry or narrow the question."
                 break
 
-            if event["type"] == "_done":
-                # Autonomous mode: the coordinator's final message is the answer.
-                # There are no confirmation gates to infer.
-                final = str(event.get("final", "")).strip()
-                session = STORE.get(session_id)
-                if final:
-                    assistant_message = ui_message("assistant", final)
-                    session["messages"].append(assistant_message)
-                    STORE.save(session)
-                    await websocket.send_text(
-                        json.dumps({"type": "assistant_final", "message": assistant_message,
-                                    "stages": session["stages"]}, ensure_ascii=False)
-                    )
-                else:
-                    run_error = "This run produced no reply. Please retry."
+            etype = event["type"]
+            if etype == "_done":
+                run_error = await on_done(session_id, str(event.get("final", "")).strip())
                 break
 
-            if event["type"] == "_error":
+            if etype == "_error":
                 run_error = "Something went wrong during the run. Please retry later."
                 break
 
-            if event["type"] == "stream":
-                # Live token stream for the active stage. Ephemeral: forwarded to
+            if etype == "stream":
+                # Live token stream for the active lane. Ephemeral: forwarded to
                 # the client for the live card but not persisted to history.
                 await websocket.send_text(json.dumps({
                     "type": "stream",
@@ -1157,7 +1328,7 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                 }, ensure_ascii=False))
                 continue
 
-            if event["type"] == "activity":
+            if etype == "activity":
                 session = STORE.get(session_id)
                 message = event.get("message")
                 if isinstance(message, dict):
@@ -1166,7 +1337,7 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                     await websocket.send_text(json.dumps({"type": "activity", "message": message}, ensure_ascii=False))
                 continue
 
-            if event["type"] == "stage":
+            if etype == "stage":
                 session = STORE.get(session_id)
                 set_stage(session, event["stage"], event.get("status", "running"))
                 status = event.get("status", "running")
@@ -1209,6 +1380,186 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
         pass
 
 
+async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids: list[str]) -> None:
+    content = content.strip()
+    if not content:
+        return
+
+    session = STORE.get(session_id)
+    # While the schema gate is open, an incoming chat is the user's confirmation
+    # to proceed to solving (the UI only offers Confirm / edit-in-Schema-Studio
+    # here, and the editor confirms via POST /api/schema/confirm then sends this).
+    if stage_status(session, "confirm_schema") == "waiting":
+        await handle_confirm_schema(websocket, session_id)
+        return
+
+    # Otherwise this is a brand-new question: reset the pipeline for a fresh run.
+    upload_names = [Path(str(item)).name for item in upload_ids if str(item).strip()]
+    user_message = ui_message("user", content, uploads=upload_names)
+    session["messages"].append(user_message)
+    if sum(1 for item in session["messages"] if item.get("role") == "user") == 1:
+        session["title"] = content[:42] + ("..." if len(content) > 42 else "")
+    session["stages"] = fresh_stages()
+    session["clarification"] = None
+    run_id = f"sess-{safe_session_id(session_id)}-{int(time.time() * 1000)}"
+    session["run_id"] = run_id
+    paths = resolve_upload_paths(session_id, session, upload_names)
+    STORE.save(session)
+    await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
+    await _emit_run_start(websocket, session_id, "Question received. Clarifying the problem…")
+
+    run_dir = RUNS_DIR / run_id
+
+    def runner(emit) -> str:
+        return run_segment_clarify(content, paths, f"{run_id}:{AGENT_ID}:clarify", run_dir, emit)
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_problem_gate(websocket, sid, final)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def handle_confirm_problem(
+    websocket: Any, session_id: str, problem: str, steps: list[str]
+) -> None:
+    """The user confirmed (and may have edited) the clarified problem + steps.
+    Persist them and run segment 2 (evidence + schema), then open the schema gate."""
+    problem = problem.strip()
+    steps = [str(item).strip() for item in steps if str(item).strip()]
+    session = STORE.get(session_id)
+    run_id = session.get("run_id", "")
+    if not problem or not steps or not run_id:
+        return
+
+    session["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
+    set_stage(session, "confirm_problem", "done")
+    paths = resolve_upload_paths(session_id, session, [])
+    confirm_message = ui_message("user", "已确认问题与求解步骤，请继续。")
+    session["messages"].append(confirm_message)
+    STORE.save(session)
+    await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
+    await _emit_run_start(websocket, session_id, "Problem confirmed. Collecting evidence and building the schema…")
+
+    run_dir = RUNS_DIR / run_id
+
+    def runner(emit) -> str:
+        return run_segment_schema(problem, steps, paths, f"{run_id}:{AGENT_ID}:schema", run_dir, emit)
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_schema_gate(websocket, sid, final)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def handle_confirm_schema(websocket: Any, session_id: str) -> None:
+    """The user confirmed (and may have edited via Schema Studio) the schema.
+    Promote the draft, rebuild the workspace, and run segment 3 (extract + solve)."""
+    session = STORE.get(session_id)
+    run_id = session.get("run_id", "")
+    if not run_id:
+        return
+    run_dir = RUNS_DIR / run_id
+    clar = session.get("clarification") or {}
+    problem = str(clar.get("problem") or "").strip()
+    if not problem:
+        # Fall back to the most recent user question if the gate state was lost.
+        for message in reversed(session.get("messages", [])):
+            if message.get("role") == "user" and message.get("content"):
+                problem = str(message["content"]).strip()
+                break
+    set_stage(session, "confirm_schema", "done")
+    paths = resolve_upload_paths(session_id, session, [])
+    confirm_message = ui_message("user", "已确认 Schema，请继续求解。")
+    session["messages"].append(confirm_message)
+    STORE.save(session)
+    await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
+    await _emit_run_start(websocket, session_id, "Schema confirmed. Extracting data and solving…")
+
+    def runner(emit) -> str:
+        # Promote the (possibly edited) draft schema to confirmed and rebuild the
+        # workspace so extraction runs against exactly what the user approved.
+        finalize_schema(run_dir)
+        return run_segment_solve(problem, paths, f"{run_id}:{AGENT_ID}:solve", run_dir, emit)
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_answer(websocket, sid, final)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def _finalize_problem_gate(websocket: Any, session_id: str, final: str) -> str | None:
+    """Open the problem-confirmation gate from segment 1's clarification reply."""
+    session = STORE.get(session_id)
+    clarification = extract_clarification(final)
+    if not clarification:
+        # The clarifier did not return parseable JSON; surface its text directly
+        # rather than hanging, and leave the pipeline without a gate.
+        if final:
+            message = ui_message("assistant", final)
+            session["messages"].append(message)
+            STORE.save(session)
+            await _send_assistant_final(websocket, session, message)
+            return None
+        return "This run produced no reply. Please retry."
+    set_stage(session, "confirm_problem", "waiting")
+    session["clarification"] = {**clarification, "status": "waiting"}
+    message = ui_message(
+        "assistant",
+        "我已澄清问题并拟定了求解步骤，请确认或修改后继续。",
+        clarification=clarification,
+        waiting="confirm_problem",
+    )
+    session["messages"].append(message)
+    STORE.save(session)
+    await _send_assistant_final(websocket, session, message)
+    return None
+
+
+async def _finalize_schema_gate(websocket: Any, session_id: str, final: str) -> str | None:
+    """Open the schema-confirmation gate after segment 2 builds the schema."""
+    session = STORE.get(session_id)
+    run_id = session.get("run_id", "")
+    run_dir = RUNS_DIR / run_id if run_id else None
+    has_schema = run_dir is not None and (
+        (run_dir / "concepts" / "draft_schema.py").exists()
+        or (run_dir / "concepts" / "confirmed_schema.py").exists()
+    )
+    if not has_schema:
+        # No schema was produced; surface the coordinator's text instead of gating.
+        if final:
+            message = ui_message("assistant", final)
+            session["messages"].append(message)
+            STORE.save(session)
+            await _send_assistant_final(websocket, session, message)
+            return None
+        return "The schema could not be built. Please retry."
+    open_schema_gate(run_dir)
+    set_stage(session, "confirm_schema", "waiting")
+    # The markers below let the frontend render the editable schema-review card.
+    message = ui_message(
+        "assistant",
+        "我已根据证据构建好本体 Schema，请在下方查看并确认；如需调整可打开 Schema Studio 编辑后再确认。\n\n"
+        "**Entity Definitions**\n\n**Relation Schema**",
+        waiting="confirm_schema",
+    )
+    session["messages"].append(message)
+    STORE.save(session)
+    await _send_assistant_final(websocket, session, message)
+    return None
+
+
+async def _finalize_answer(websocket: Any, session_id: str, final: str) -> str | None:
+    """Deliver segment 3's final answer."""
+    session = STORE.get(session_id)
+    if final:
+        message = ui_message("assistant", final)
+        session["messages"].append(message)
+        STORE.save(session)
+        await _send_assistant_final(websocket, session, message)
+        return None
+    return "This run produced no reply. Please retry."
+
+
 class HttpEventSink:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
@@ -1233,6 +1584,13 @@ async def chat_fallback(session_id: str, request: Request):
             session["id"],
             str(payload.get("content", "")),
             list(payload.get("upload_ids", []) or []),
+        )
+    elif payload_type == "confirm_problem":
+        await handle_confirm_problem(
+            sink,
+            session["id"],
+            str(payload.get("problem", "")),
+            [str(item) for item in (payload.get("steps") or [])],
         )
     elif payload_type == "history":
         sink.events.append({"type": "history", "session": STORE.get(session["id"])})

@@ -27,14 +27,16 @@ from harness.config.schema import (
 
 
 def _resolve_env(value: str) -> str:
-    """替换 ${ENV_VAR} 占位符为环境变量值"""
+    """替换 ${ENV_VAR} 占位符为环境变量值。未解析的占位符返回空串，避免把
+    形如 "${DEEPSEEK_API_KEY}" 的字面量当成真实密钥使用。"""
     if not isinstance(value, str):
         return value
-    return re.sub(
+    resolved = re.sub(
         r"\$\{([^}]+)\}",
-        lambda m: os.environ.get(m.group(1), m.group(0)),
+        lambda m: os.environ.get(m.group(1), ""),
         value,
     )
+    return resolved
 
 
 def _parse_providers(data: dict[str, Any] | None) -> dict[str, ProviderConfig]:
@@ -43,9 +45,12 @@ def _parse_providers(data: dict[str, Any] | None) -> dict[str, ProviderConfig]:
         return {}
     providers = {}
     for name, cfg in data.items():
+        # An explicit `<PROVIDER>_API_KEY` environment variable always wins over
+        # whatever is in the file, so secrets never have to live in the repo.
+        env_key = os.environ.get(f"{name.upper()}_API_KEY", "")
         providers[name] = ProviderConfig(
             base_url=_resolve_env(cfg.get("base_url", "")),
-            api_key=_resolve_env(cfg.get("api_key", "")),
+            api_key=env_key or _resolve_env(cfg.get("api_key", "")),
             models=cfg.get("models", {}),
         )
     return providers
