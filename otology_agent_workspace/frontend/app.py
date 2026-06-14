@@ -54,7 +54,6 @@ UPLOAD_DIR = ROOT / "otology_agent_workspace" / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RUNS_DIR = ROOT / "runs" / "ontology_workspace_runs"
 ALLOWED_UPLOAD_SUFFIXES = {".csv", ".txt", ".md"}
-MOCK_MODE = os.environ.get("ONTOLOGY_UI_MOCK", "") == "1"
 
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _AGENT_LOCK = threading.Lock()
@@ -314,7 +313,6 @@ async def health():
         "brand": UI_BRAND,
         "agent": AGENT_ID,
         "model": model_id,
-        "mock": MOCK_MODE,
         "upload_count": total_upload_count(),
     }
 
@@ -1021,11 +1019,22 @@ def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_i
 
 
 def extract_json_payload(text: str) -> dict[str, Any]:
-    try:
-        from harness.ontology.json_contract import extract_json_object
+    """Parse the agent's final message as a single JSON object.
 
-        data = extract_json_object(text)
-        return data if isinstance(data, dict) else {}
+    Raises ValueError if the text is not a JSON object. Callers that expect a
+    structured contract (evidence/schema/judge) must surface this failure rather
+    than masking it; steps whose result lives in output files (extractor/solver)
+    use ``expects_json=False`` and tolerate prose via ``parse_optional_json``.
+    """
+    from harness.ontology.json_contract import extract_json_object
+
+    return extract_json_object(text)
+
+
+def parse_optional_json(text: str) -> dict[str, Any]:
+    """Best-effort JSON parse for steps validated by their output files."""
+    try:
+        return extract_json_payload(text)
     except Exception:
         return {}
 
@@ -1038,7 +1047,12 @@ def run_subagent_json(
     emit,
     max_tool_calls: int = 48,
     stage_id: str = "",
+    expects_json: bool = True,
 ) -> dict[str, Any]:
+    # ``expects_json`` steps must return a single JSON object; a parse failure is
+    # surfaced (no silent {}). File-validated steps (extractor/solver) emit prose
+    # and pass ``expects_json=False`` so their message is parsed best-effort.
+    parse = extract_json_payload if expects_json else parse_optional_json
     from langchain_core.messages import HumanMessage
 
     agent, _agent_cfg = get_cached_agent(agent_id)
@@ -1149,7 +1163,7 @@ def run_subagent_json(
                 if tool_name and tool_name != "task":
                     emit({"type": "activity", "message": tool_activity(tool_name, status="done", call_id=cid, output=str(result))})
         if truncated:
-            parsed = extract_json_payload(final_content)
+            parsed = parse(final_content)
             parsed["_raw"] = final_content
             parsed["_truncated"] = True
             return parsed
@@ -1162,7 +1176,7 @@ def run_subagent_json(
                 if stage_id and content != emitted_model_output:
                     emitted_model_output = content
                     emit({"type": "activity", "message": model_activity(stage_id, content)})
-    parsed = extract_json_payload(final_content)
+    parsed = parse(final_content)
     parsed["_raw"] = final_content
     return parsed
 
@@ -1360,7 +1374,12 @@ def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[st
         emit,
         stage_id="schema_judge",
     )
-    judgment = judger_payload if "answerable" in judger_payload else {"answerable": False}
+    if "answerable" not in judger_payload:
+        raise RuntimeError(
+            "schema_judger did not return an 'answerable' verdict: "
+            f"{str(judger_payload.get('_raw', ''))[:300]}"
+        )
+    judgment = judger_payload
 
     emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
     return schema_confirmation_message(run_dir, judgment, evidence)
@@ -1382,15 +1401,14 @@ def select_best_instances(
     existing file, so when its first instances.json fails schema validation it
     writes the corrected payload to a new path (e.g. instances_final.json,
     instances_v2.json). We therefore consider every instances*.json file and
-    prefer the schema-conforming one with the most rows; if none conform we fall
-    back to the most populated payload so the correction retry still has data."""
+    prefer the schema-conforming one with the most rows. Non-conforming payloads
+    are never promoted: masking a failed extraction with malformed data is a
+    fallback we deliberately do not provide."""
     data_dir = instances_path.parent
     if not data_dir.exists():
         return None
     best_valid: dict[str, Any] | None = None
     best_valid_rows = -1
-    best_any: dict[str, Any] | None = None
-    best_any_rows = -1
     for path in sorted(data_dir.glob("instances*.json")):
         try:
             candidate = read_json(path)
@@ -1401,15 +1419,13 @@ def select_best_instances(
         rows = _instance_rows(candidate)
         if rows <= 0:
             continue
-        if rows > best_any_rows:
-            best_any, best_any_rows = candidate, rows
         try:
             conforms = validate_instances(candidate, confirmed_path).get("ok", False)
         except Exception:
             conforms = False
         if conforms and rows > best_valid_rows:
             best_valid, best_valid_rows = candidate, rows
-    chosen = best_valid if best_valid is not None else best_any
+    chosen = best_valid
     if chosen is None:
         return None
     instances_path.write_text(
@@ -1449,6 +1465,7 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         emit,
         max_tool_calls=48,
         stage_id="extract",
+        expects_json=False,
     )
     # The extractor is the most tool-heavy step; retry once if it produced no
     # instances or instances that do not conform to the confirmed schema. The
@@ -1480,6 +1497,7 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
             emit,
             max_tool_calls=48,
             stage_id="extract",
+            expects_json=False,
         )
         instances = select_best_instances(instances_path, confirmed_path)
         if instances is None:
@@ -1513,6 +1531,7 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         emit,
         max_tool_calls=48,
         stage_id="solve",
+        expects_json=False,
     )
     solver = read_solver_result(run_dir)
 
@@ -1523,102 +1542,6 @@ def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str
         return sanitize_user_visible_output(str(solver.get("answer", "")))
     return "Solving failed. Please review the run results and try again."
 
-
-MOCK_SCHEMA = '''from typing import List, Optional
-
-
-class Company:  # entity_type: Organization
-    _id: str
-    name: str
-    country: Optional[str]
-    operates_in_industry: List["Industry"]
-
-
-class Industry:  # entity_type: BusinessDomain
-    _id: str
-    name: str
-    operates_in_industry_r: List["Company"]  # reverse
-'''
-
-
-def _write_mock_web_evidence(run_dir: Path, source_id: str, stage: str, url: str, title: str, query: str) -> None:
-    web_dir = run_dir / "intermediate" / "web_evidence"
-    web_dir.mkdir(parents=True, exist_ok=True)
-    (web_dir / f"{source_id}.json").write_text(json.dumps({
-        "source_id": source_id,
-        "query": query,
-        "url": url,
-        "title": title,
-        "snippet": "Mock persisted web evidence for local UI testing.",
-        "retrieved_at": now_iso(),
-        "collected_stage": stage,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
-    """Deterministic walkthrough of the pipeline for local UI testing."""
-    stages = {s["id"]: s["status"] for s in session["stages"]}
-    run_dir = session_run_dir(session)
-    if stages.get("confirm_problem") == "waiting":
-        (run_dir / "concepts").mkdir(parents=True, exist_ok=True)
-        (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
-        (run_dir / "concepts" / "draft_schema.py").write_text(MOCK_SCHEMA, encoding="utf-8")
-        (run_dir / "intermediate" / "evidence_manifest.json").write_text(json.dumps({
-            "question": "Which companies in the US do data analytics?",
-            "needs_web_search": True,
-            "sources": [
-                {"source_id": "company_sample.csv", "source_kind": "upload", "file_type": "csv",
-                 "reason": "Sample company table with company name, country and industry fields"},
-                {"source_id": "web_001", "source_kind": "web", "file_type": "html",
-                 "title": "Top data analytics companies in the US",
-                 "url": "https://example.com/us-data-analytics-companies",
-                 "collected_stage": "evidence",
-                 "reason": "Supplements industry sub-domain labels missing from the upload"},
-            ],
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        # Round 1 web evidence, persisted to this session's run dir.
-        _write_mock_web_evidence(
-            run_dir, "web_001", "evidence",
-            "https://example.com/us-data-analytics-companies",
-            "Top data analytics companies in the US",
-            "US data analytics companies",
-        )
-        for stage, pause in (("evidence", 1.2), ("schema_build", 1.6), ("schema_judge", 1.2)):
-            emit({"type": "stage", "stage": stage, "status": "running"})
-            time.sleep(pause)
-        emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
-        return schema_confirmation_message(run_dir, {"answerable": True}, {"sources": []})
-    if stages.get("confirm_schema") == "waiting":
-        if (run_dir / "concepts" / "draft_schema.py").exists():
-            confirm_schema(run_dir / "concepts" / "draft_schema.py", run_dir / "concepts" / "confirmed_schema.py")
-            (run_dir / "intermediate" / "extraction_report.json").write_text(json.dumps({
-                "total_instances": 18, "total_facts": 42, "total_relations": 16,
-                "relation_types_used": ["operates_in_industry"], "avg_confidence": 0.87,
-            }, indent=2), encoding="utf-8")
-            # Round 2 supplementary web evidence reuses the same run dir (extract stage).
-            _write_mock_web_evidence(
-                run_dir, "web_002", "extract",
-                "https://example.com/analytics-subdomains",
-                "Analytics sub-domain taxonomy",
-                "data analytics sub-domains",
-            )
-        emit({"type": "stage", "stage": "extract", "status": "running"})
-        time.sleep(1.6)
-        emit({"type": "stage", "stage": "solve", "status": "running"})
-        time.sleep(1.6)
-        emit({"type": "stage", "stage": "solve", "status": "done"})
-        return (
-            "Data analytics companies in the US include: Palantir, Databricks, and Snowflake."
-        )
-    emit({"type": "stage", "stage": "clarify", "status": "running"})
-    time.sleep(1.4)
-    emit({"type": "stage", "stage": "confirm_problem", "status": "waiting"})
-    return (
-        "Here is my understanding of the question. Please confirm:\n\n"
-        "**Question**: List data analytics companies operating in the US, including company names and their sub-domains.\n\n"
-        "**Solution steps**:\n1. Build Company and Industry entities and their relations\n2. Search for and extract matching data\n3. Return the list of company names and domains\n\n"
-        "Reply \"Confirm\" to continue, or tell me what needs to change."
-    )
 
 
 @app.websocket("/ws/{session_id}")
@@ -1720,9 +1643,7 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
             if isinstance(clarification, dict):
                 confirmed_problem = str(clarification.get("problem", "")).strip()
             pipeline_question = confirmed_problem or content
-            if MOCK_MODE:
-                final = run_mock_agent(agent_input, session, emit)
-            elif get_stage_status(session, "confirm_problem") != "done" and get_stage_status(session, "evidence") == "pending":
+            if get_stage_status(session, "confirm_problem") != "done" and get_stage_status(session, "evidence") == "pending":
                 final = run_problem_clarifier_agent(content, paths, session["thread_id"], session_run_dir(session), emit)
             elif get_stage_status(current, "confirm_schema") in ("waiting", "done"):
                 final = run_solve_pipeline(pipeline_question, paths, current, emit)
