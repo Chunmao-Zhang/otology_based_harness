@@ -69,9 +69,10 @@
 | app.py 语法/导入 | `ast.parse` + `import` | OK，`run_coordinator_autonomous` 存在，旧状态机函数已无 |
 | app.js 语法 | `node --check` | OK |
 | 后端 WS 探针 | `/home/ubuntu/ws_probe.py`（直连本地 WS 跑一题 180s） | coordinator **自主按序委派全部子 Agent**：clarify→evidence→schema_build→schema_judge→extract；每个 `stage` 事件带正确 `agent`/`agent_label`；`__coordinator__` lane 有 narration 流（`coordinator lane stream seen: True`） |
-| 浏览器端到端（录屏） | localhost:8095 提问「同时拿奥斯卡最佳影片 + 戛纳金棕榈的导演」 | UI 层级正确渲染：紫色主控横幅 + 委派链 + 蓝色子Agent卡片 + 主控 narration 实时更新；跑通 澄清→证据→建Schema→判Schema→抽数据（data_extractor 实抽 4 导演 / 8 影片 / 8 关系）。**最后浏览器标签页崩溃（见 §5），未录到最终答案气泡** |
+| 浏览器端到端（录屏） | localhost:8095 提问「同时拿奥斯卡最佳影片 + 戛纳金棕榈的导演」 | UI 层级正确渲染：紫色主控横幅 + 委派链 + 蓝色子Agent卡片 + 主控 narration 实时更新；跑通 澄清→证据→建Schema→判Schema→抽数据（data_extractor 实抽 4 导演 / 8 影片 / 8 关系）。**最后浏览器崩溃（见 §5-P1），未在浏览器端录到最终答案气泡** |
+| 服务端答案校验 | 读取该次 run 的 `solver_result.json` | **正确且完整**：4 位导演 Billy Wilder/《The Lost Weekend》(1945)、Delbert Mann/《Marty》(1955)、Bong Joon-ho/《Parasite》(2019)、Sean Baker/《Anora》(2024)；均可追溯，零编造 |
 
-录屏（含标注）已发用户。WS 探针证明后端链路完整；浏览器证明 UI 层级与实时性。
+录屏（含标注）已发用户。WS 探针证明后端链路完整；浏览器证明 UI 层级与实时性；服务端 `solver_result.json` 证明答案正确。唯一未在浏览器目击的是最终答案气泡的渲染（因 §5-P1 崩溃）。
 
 ---
 
@@ -98,11 +99,12 @@ PYTHONPATH=. python3 -m harness.ontology.pipeline -q "<question>" [-u <upload>] 
 
 ## 5. 待解决 / 已知问题（交给下一个 AI）
 
-### P1 — 浏览器长页面渲染崩溃（最需要修）
-- 现象：一次完整 run（数分钟、上千条 `stream` token + 大量 model thinking 文本）跑到 extract/solve 阶段后，Chrome 标签页崩溃「Aw, Snap! Error code: 5」（渲染进程 OOM）。**服务端不受影响**，是前端 DOM/内存增长问题。
+### P1 — 浏览器长页面渲染崩溃（最需要修，最高优先级）
+- 现象：一次完整 run（数分钟、上千条 `stream` token + 大量 model thinking 文本）跑到 extract/solve 阶段后，Chrome 渲染进程 OOM。本轮**先是标签页崩溃「Aw, Snap! Error code: 5」，刷新后整个 Chrome 进程都崩掉了**（复现 2 次）。**服务端完全不受影响**，纯前端 DOM/内存增长问题。
+- 重要：**这次测试的服务端 run 实际上完整跑完并产出了正确、可追溯的答案**。`runs/ontology_workspace_runs/sess-cd509d8b9a3f-1781407670241/intermediate/solver_result.json` 给出 4 位导演且全部正确：Billy Wilder/《The Lost Weekend》(1945)、Delbert Mann/《Marty》(1955)、Bong Joon-ho/《Parasite》(2019)、Sean Baker/《Anora》(2024)。也就是说后端验收③（答案正确且覆盖重点）端到端成立；**缺口纯粹是前端在长 run 下的渲染健壮性**。
 - 怀疑点（在 `static/app.js`）：`state.liveStream[stage]` 的 `thinking`/`output` 持续累加、model thinking 文本不截断、每次 WS 事件全量重渲染消息时间线导致 DOM 膨胀。
 - 建议：对 `liveStream` 文本做长度上限/截断；增量渲染而非整树重建；旧 run 折叠时卸载其重 DOM；对 `stream` token 做节流合并。
-- **下一个 AI 应复测一次完整 run**，确认最终答案气泡（`_done` → `assistant_final`）与「主控答案标签 `coordinator-answer-tag`」能正常渲染——本轮因崩溃未在浏览器端目击这一步（但 WS 探针 + 后端逻辑表明会触发）。
+- **下一个 AI 应先修这个内存增长，再复测一次完整 run**，确认最终答案气泡（`_done` → `assistant_final`）与「主控答案标签 `coordinator-answer-tag`」能在浏览器正常渲染——本轮因崩溃未能在浏览器端目击这一步（但 WS 探针、服务端 `solver_result.json` 已产出、以及 `_done` 逻辑都表明该事件会触发）。
 
 ### P2 — VM 内浏览器无法解析 cloudflared 公网域名
 - 现象：VM 里的 Chrome 打开 `*.trycloudflare.com` 报 `DNS_PROBE_FINISHED_NXDOMAIN`，但 `curl` 从 shell 能 200。本轮录屏改用 `http://localhost:8095` 完成。
@@ -141,7 +143,7 @@ PYTHONPATH=. python3 -m harness.ontology.pipeline -q "<question>" [-u <upload>] 
 
 - ①「控制全流程的 LLM 能按流程调用 subagent 完成任务」：**达成**——coordinator 经 `task` 自主委派全部 6 子 Agent（WS 探针 + 录屏双重确认）。
 - ②「构建的 schema 能解决问题且相关」：**达成**——schema 含问题所需实体/关系并落入 `relations.csv`。
-- ③「答案正确且覆盖大部分重点结果」：**后端 Phase 1 已用 4 道复杂题验证达成**；前端本轮因浏览器崩溃未在 UI 上目击最终答案气泡，需按 §5-P1 复测一次确认 UI 呈现。
+- ③「答案正确且覆盖大部分重点结果」：**达成**——后端 Phase 1 已用 4 道复杂题验证；本轮前端测试的服务端 run 也产出正确完整答案（4 位导演全对，见 §3）。唯一未目击的是浏览器端最终答案气泡的渲染，需按 §5-P1 修完内存问题后复测确认。
 - UI 新增要求：备份（✔）、主控/子 Agent 清晰区分（✔）、美观且功能适配（✔，见录屏）。
 
 ---
