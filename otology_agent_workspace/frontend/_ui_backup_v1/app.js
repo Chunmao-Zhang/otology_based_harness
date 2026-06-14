@@ -79,79 +79,6 @@
     runStartedAt: 0,
   };
 
-  // ── Agent identity: coordinator vs subagents ─────────────────────────────
-  // The whole run is orchestrated by ONE coordinator LLM (deepseek-v4-flash)
-  // that delegates each step to a specialised subagent via the `task` tool.
-  // The UI makes that hierarchy explicit: a coordinator banner sits above the
-  // per-step cards, and every step card is badged with the subagent that owns
-  // it — so a viewer can always see which agent is doing which task.
-  const COORDINATOR_LANE = '__coordinator__';
-  const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', cn: '主控 Agent', icon: '◉' };
-  const SUBAGENT_ORDER = ['clarify', 'evidence', 'schema_build', 'schema_judge', 'extract', 'solve'];
-  const STAGE_AGENTS = {
-    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', cn: '问题澄清', icon: '◇' },
-    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', cn: '证据采集', icon: '◈' },
-    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    cn: 'Schema 构建', icon: '▦' },
-    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     cn: 'Schema 评审', icon: '§' },
-    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    cn: '数据抽取',   icon: '⛏' },
-    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  cn: '代码求解',   icon: 'ƒ' },
-  };
-  function stageAgent(stageId) {
-    return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', cn: '', icon: '●' };
-  }
-  function agentBadgeHtml(stageId) {
-    const a = stageAgent(stageId);
-    return `<span class="agent-badge subagent" title="Subagent · ${escapeHtml(a.label)}">
-        <span class="agent-badge-glyph">${escapeHtml(a.icon)}</span>
-        <span class="agent-badge-text"><span class="agent-badge-kind">子Agent</span><span class="agent-badge-name">${escapeHtml(a.label)}</span></span>
-      </span>`;
-  }
-  function coordinatorChipRow() {
-    return `<div class="deleg-chip-row">${SUBAGENT_ORDER.map((id) => {
-      const stage = stageById(id);
-      const status = stage ? stage.status : 'pending';
-      const a = stageAgent(id);
-      const live = state.running && status === 'running';
-      const cls = status === 'done' ? 'done' : (status === 'running' ? 'running' : (status === 'waiting' ? 'waiting' : 'pending'));
-      const dot = status === 'done' ? '✓' : (status === 'running' ? '●' : '');
-      return `<span class="deleg-chip ${cls}${live ? ' live' : ''}" title="${escapeHtml(a.label)} · ${escapeHtml(status)}">
-          <span class="deleg-chip-glyph">${escapeHtml(a.icon)}</span>
-          <span class="deleg-chip-name">${escapeHtml(a.label)}</span>
-          <span class="deleg-chip-dot">${dot}</span>
-        </span>`;
-    }).join('<span class="deleg-arrow" aria-hidden="true">→</span>')}</div>`;
-  }
-  function coordinatorBannerHtml(isLatest) {
-    const live = (state.liveStream || {})[COORDINATOR_LANE] || {};
-    const active = inferActiveStageId();
-    const activeAgent = active ? stageAgent(active) : null;
-    const orchestrating = isLatest && state.running;
-    const subtitle = orchestrating
-      ? (activeAgent ? `正在委派 → 子Agent「${activeAgent.label}」` : '正在编排工作流…')
-      : '已完成全流程编排';
-    const narration = (live.output || live.thinking || '').trim();
-    const narrHtml = (orchestrating && narration)
-      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">主控决策</span>${formatMarkdown(narration)}</div>`
-      : '';
-    return `
-      <div class="coordinator-banner${orchestrating ? ' active' : ''}">
-        <div class="coordinator-head">
-          <div class="coordinator-avatar">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
-          <div class="coordinator-meta">
-            <div class="coordinator-title">
-              <span class="coordinator-kind">主控 Agent</span>
-              <span class="coordinator-name">Coordinator</span>
-              ${orchestrating ? '<span class="coordinator-live-dot" title="Orchestrating"></span>' : '<span class="run-check">✓</span>'}
-            </div>
-            <div class="coordinator-subtitle">${escapeHtml(subtitle)}</div>
-          </div>
-          <div class="coordinator-tag">deepseek-v4-flash · task()</div>
-        </div>
-        ${coordinatorChipRow()}
-        ${narrHtml}
-      </div>`;
-  }
-
   // ── Utilities ───────────────────────────────────────────────────────────
 
   function escapeHtml(value) {
@@ -1041,8 +968,7 @@
             <div class="run-card-head completed-task-head">
               <div class="task-node-title">
                 <span class="run-check">✓</span>
-                ${agentBadgeHtml(card.id)}
-                <span class="task-node-stage">${escapeHtml(card.title)}</span>
+                <span>${escapeHtml(card.title)}</span>
               </div>
               <div class="task-node-actions">
                 <span class="run-count">${toolCount} tool updates</span>
@@ -1056,16 +982,13 @@
         </section>
       `;
     }
-    const workingLabel = isWaiting ? '等待确认' : `${escapeHtml(stageAgent(card.id).label)} 执行中`;
     return `
       <section class="task-node ${escapeHtml(status)} expanded">
         <div class="run-card ontology-task-card working">
           <div class="run-card-head">
             <div class="task-node-title">
               <span class="${isWaiting ? 'run-check' : 'run-pulse'}">${isWaiting ? '✓' : ''}</span>
-              ${agentBadgeHtml(card.id)}
-              <span class="task-node-stage">${escapeHtml(card.title)}</span>
-              <span class="task-node-working">${workingLabel}</span>
+              <span>${isWaiting ? 'Waiting for your confirmation' : 'Agent is working'}</span>
               ${isRunning ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>` : ''}
             </div>
             <span class="run-count">${toolCount} tool updates</span>
@@ -1101,9 +1024,9 @@
     // The current run stays fully expanded with the live tool bar.
     if (isLatest) {
       return `
-        <article class="message event stage-pipeline-message orchestration">
-          ${coordinatorBannerHtml(true)}
-          <div class="task-node-list subagent-lane">
+        <article class="message event stage-pipeline-message">
+          <div class="avatar stage-pipeline-avatar">O</div>
+          <div class="task-node-list">
             ${cards.map((card) => renderTaskNode(card, isLatest)).join('')}
           </div>
         </article>
@@ -1117,10 +1040,7 @@
     if (reveal) state.revealedGroups.add(groupKey);
     const barHead = `
       <div class="stage-group-bar-head">
-        <span class="stage-group-summary-title">
-          <span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span>
-          <span class="run-check">✓</span> 已编排 ${cards.length} ${stepWord}
-        </span>
+        <span class="stage-group-summary-title"><span class="run-check">✓</span> Completed · ${cards.length} ${stepWord}</span>
         <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
       </div>
     `;
@@ -1329,11 +1249,8 @@
       if (message.role === 'assistant') {
         return `
           <article class="message assistant">
-            <div class="avatar coordinator-answer-avatar" title="Coordinator">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
-            <div class="bubble">
-              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>主控 Agent</span><span class="coordinator-answer-note">综合各子Agent结果给出最终答案</span></div>
-              ${renderAssistantContent(message)}
-            </div>
+            <div class="avatar">O</div>
+            <div class="bubble">${renderAssistantContent(message)}</div>
           </article>
         `;
       }

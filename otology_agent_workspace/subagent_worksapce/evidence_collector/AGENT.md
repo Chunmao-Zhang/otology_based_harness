@@ -42,14 +42,14 @@ Return only valid JSON:
   "schema_plan": [
     {"kind": "entity", "name": "<EntityName>", "source_id": "<source_id>", "fields": ["<field1>", "<field2>"]},
     {"kind": "relation", "name": "<relation_name>", "head": "<HeadEntity>", "tail": "<TailEntity>", "source_id": "<source_id>"}
-  ]
+  ],
+  "manifest_path": "<the manifest_path returned by save_evidence_manifest>"
 }
 ```
 
-`schema_plan` must mirror your `[plan]` todos one-to-one. The harness/backend
-persists the evidence manifest (question, sources, needs_web_search, handler,
-schema_plan) and the web evidence files that `web_search` already saved, so you
-do not write the manifest file yourself. Derive `schema_plan` from the question
+`schema_plan` must mirror your `[plan]` todos one-to-one. You persist the evidence
+manifest yourself by calling `save_evidence_manifest` (see below) and put the
+`manifest_path` it returns in your output. Derive `schema_plan` from the question
 and the evidence you actually collected; never reuse an unrelated example
 domain. Entity and relation names must be specific to the user's question.
 
@@ -61,7 +61,7 @@ Each todo is `{"content": "...", "status": "pending" | "in_progress" | "complete
 
 - `[plan] Build entity <EntityName> from <source_id> (fields: <field1>, <field2>, ...)`
 - `[plan] Build relation <relation_name>: <HeadEntity> -> <TailEntity> from <source_id>`
-- `[manifest] Write evidence_manifest.json including schema_plan`
+- `[manifest] Call save_evidence_manifest with sources and schema_plan`
 
 Rules:
 
@@ -78,41 +78,67 @@ Rules:
 - `source_reader`
 - `evidence_retriever`
 - `web_search`
+- `save_evidence_manifest`
 
 ## Cost Rules
 
 - Do not call `web_search` if uploads or existing evidence are enough.
-- If web search is necessary, call it at most once.
-- Use at most 3 search results.
+- Use at most 3 results per search.
+- When the question needs no external facts (uploads are sufficient), do not
+  search.
+- When the question requires external facts and has no uploads, search
+  **breadth-first** to maximize coverage within the run's search budget: spend
+  distinct queries across as many distinct candidate entities as the question
+  implies, not just one or two. For a multi-hop / join question (e.g. "two
+  companies share an investor, one founder previously worked at the other"),
+  every candidate pair needs evidence for **both** companies' investors and the
+  founder's prior employer — so cover several candidate companies, and for each
+  promising one, search its founders' prior companies and both companies'
+  investors. Stop early only when further searches stop yielding new candidate
+  entities or links. The backend caps the total searches per run, so prioritize
+  the highest-value distinct queries first.
 
 ## Web Evidence Persistence
 
-Every `web_search` result you keep must be persisted so later stages can reuse it without searching again:
-
-- Save each kept result to `runs/ontology_workspace_runs/<run_id>/intermediate/web_evidence/<source_id>.json` with this shape:
-
-```json
-{
-  "source_id": "web_001",
-  "query": "...",
-  "url": "...",
-  "title": "...",
-  "snippet": "...",
-  "retrieved_at": "<ISO timestamp>",
-  "collected_stage": "evidence"
-}
-```
-
-- Register each saved result in the manifest `sources` list as `{"source_id": "web_001", "source_kind": "web", "url": "...", "title": "...", "evidence_path": "...", "reason": "..."}`.
-- Use sequential ids `web_001`, `web_002`, ... Discarded search results must not be saved or registered.
+The `web_search` tool automatically persists every result it returns to
+`intermediate/web_evidence/web_NNN.json` (with `source_id`, `url`, `title`,
+`snippet`, ...). You do not write those files yourself. When you call
+`save_evidence_manifest`, it merges those persisted web evidence files into the
+manifest `sources` automatically, so you only need to list the `upload` sources
+you read; you may also list the `web` sources you kept if you want explicit
+`reason` notes.
 
 ## Manifest Persistence
 
-The harness/backend writes `evidence_manifest.json` under the current run's
-`intermediate/` directory from the JSON you return (it adds `question` and
-`handler: "schema_builder"` automatically and merges the web evidence already
-persisted by `web_search`). Your responsibility is to return accurate `sources`,
-`needs_web_search`, and a `schema_plan` that matches your `[plan]` todos.
+After you have your `sources` and `schema_plan`, call `save_evidence_manifest`
+exactly once as your final tool call:
+
+```
+save_evidence_manifest(
+  sources=<JSON string of your sources list>,
+  schema_plan=<JSON string of your schema_plan list>,
+  needs_web_search=<true|false>,
+  question="<the confirmed problem>"
+)
+```
+
+It writes `intermediate/evidence_manifest.json`, automatically merging the web
+evidence that `web_search` already persisted, and returns `{"ok": true,
+"manifest_path": "..."}`. Put that `manifest_path` in your output JSON. Do not try
+to write the manifest file with any other tool.
+
+## Source Integrity (critical)
+
+- Only register sources that actually exist: `upload` sources must come from the
+  provided `upload_paths`, and `web` sources must be results you actually
+  retrieved with `web_search` and persisted under `intermediate/web_evidence/`.
+- If `upload_paths` is empty, do **not** invent an `upload`/`knowledge_base`
+  source from memory or common knowledge. With no uploads, every source must be
+  web evidence you retrieved (or none).
+- `needs_web_search` must reflect what you actually did: set it `true` whenever
+  you called `web_search`.
+- Each source `reason` is a short factual note about what the source contains —
+  a citation, not a pre-computed answer to the user's question.
 
 ## Boundaries
 

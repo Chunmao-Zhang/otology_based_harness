@@ -106,8 +106,12 @@ def check_config_and_agents() -> None:
     coordinator_text = (WORKSPACE / "AGENT.md").read_text(encoding="utf-8")
     for marker in ["problem_clarifier", "evidence_collector", "schema_builder", "schema_judger", "data_extractor", "workspace_solver"]:
         assert marker in coordinator_text
-    assert "utils/problem_clarifier_contract.py" in coordinator_text
-    assert "Do not call `data_extractor` until the user confirms the schema" in coordinator_text
+    # Pure-LLM orchestration: the coordinator runs autonomously (no human gates)
+    # and orchestrates only through the `task` tool, delegating every concrete
+    # action to a subagent. It must never answer before the solver runs.
+    assert "Autonomous Mode" in coordinator_text
+    assert "only `task`" in coordinator_text
+    assert "solver_result.json" in coordinator_text
 
 
 def check_agent_prompts() -> None:
@@ -141,17 +145,27 @@ def check_workspace_tools() -> None:
     coordinator_tools = {tool.name for tool in get_tools_for_agent(coordinator, coordinator.workspace, str(ROOT))}
     assert "problem_clarifier_contract" not in coordinator_tools
     assert "source_reader" not in coordinator_tools
+    # Pure-LLM orchestration: the coordinator has NO worker tools; it can only
+    # delegate via the deepagents `task` tool. None of the backend ontology
+    # tools may be reachable by the coordinator itself.
+    for forbidden in {"save_evidence_manifest", "save_schema", "get_schema_outline", "build_dataset", "schema_validator", "web_search", "execute_code"}:
+        assert forbidden not in coordinator_tools, coordinator_tools
     evidence = registry.get("evidence_collector")
     evidence_tools = {tool.name for tool in get_tools_for_agent(evidence, evidence.workspace, str(ROOT))}
     assert "evidence_manifest_writer" not in evidence_tools
+    # The deterministic backend ops are agent-callable tools, owned by the agent
+    # that performs that step (not auto-routed by Python).
+    assert "save_evidence_manifest" in evidence_tools
     data = registry.get("data_extractor")
     data_tools = {tool.name for tool in get_tools_for_agent(data, data.workspace, str(ROOT))}
     assert "data_extract_company_csv" not in data_tools
+    assert {"get_schema_outline", "build_dataset"} <= data_tools, data_tools
     # write_file is a built-in execution-layer tool, granted via the allow-list.
     assert "write_file" in data.tools.allow
     builder = registry.get("schema_builder")
     builder_tools = {tool.name for tool in get_tools_for_agent(builder, builder.workspace, str(ROOT))}
     assert "schema_draft_builder" not in builder_tools
+    assert "save_schema" in builder_tools
     solver = registry.get("workspace_solver")
     solver_tools = {tool.name for tool in get_tools_for_agent(solver, solver.workspace, str(ROOT))}
     assert "workspace_solver_tool" not in solver_tools

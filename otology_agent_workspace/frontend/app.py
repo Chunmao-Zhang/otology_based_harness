@@ -54,20 +54,20 @@ UPLOAD_DIR = ROOT / "otology_agent_workspace" / "data" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RUNS_DIR = ROOT / "runs" / "ontology_workspace_runs"
 ALLOWED_UPLOAD_SUFFIXES = {".csv", ".txt", ".md"}
-MOCK_MODE = os.environ.get("ONTOLOGY_UI_MOCK", "") == "1"
 
 EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _AGENT_LOCK = threading.Lock()
 _AGENT_SINGLETON = None
 _AGENT_CACHE: dict[str, Any] = {}
 
+# Autonomous mode: the ontology_coordinator LLM drives the entire flow by
+# delegating to its six subagents with the `task` tool. There are no human
+# confirmation gates — each pipeline stage maps 1:1 to the subagent that owns it.
 PIPELINE_STAGES = [
     {"id": "clarify", "label": "Clarify Question"},
-    {"id": "confirm_problem", "label": "Confirm Question"},
     {"id": "evidence", "label": "Collect Evidence"},
     {"id": "schema_build", "label": "Build Schema"},
     {"id": "schema_judge", "label": "Judge Schema"},
-    {"id": "confirm_schema", "label": "Confirm Schema"},
     {"id": "extract", "label": "Extract Data"},
     {"id": "solve", "label": "Solve & Answer"},
 ]
@@ -81,6 +81,21 @@ SUBAGENT_STAGE = {
     "workspace_solver": "solve",
 }
 
+# Identity of the orchestrator and each subagent, surfaced to the UI so a viewer
+# can tell which agent is doing which task. ``__coordinator__`` is a virtual lane
+# carrying the main agent's own orchestration reasoning (it is not a stage).
+COORDINATOR_LANE = "__coordinator__"
+
+AGENT_LABELS = {
+    "ontology_coordinator": "Coordinator",
+    "problem_clarifier": "Problem Clarifier",
+    "evidence_collector": "Evidence Collector",
+    "schema_builder": "Schema Builder",
+    "schema_judger": "Schema Judger",
+    "data_extractor": "Data Extractor",
+    "workspace_solver": "Workspace Solver",
+}
+
 STAGE_RUNNING_TEXT = {
     "clarify": "Analyzing and clarifying the question…",
     "evidence": "Gathering evidence (reading uploads, searching the web if needed)…",
@@ -92,11 +107,9 @@ STAGE_RUNNING_TEXT = {
 
 STAGE_ACTIVITY_TEXT = {
     "clarify": "Clarifying the problem statement and solution plan.",
-    "confirm_problem": "Problem clarification is ready for your confirmation.",
     "evidence": "Collecting uploaded and public evidence as needed.",
     "schema_build": "Building an editable ontology schema from the evidence.",
     "schema_judge": "Checking whether the current schema can answer the question.",
-    "confirm_schema": "Schema is ready and waiting for your confirmation.",
     "extract": "Extracting instances, attributes, and relations with the confirmed schema.",
     "solve": "Solving the question from the extracted workspace data.",
 }
@@ -314,7 +327,6 @@ async def health():
         "brand": UI_BRAND,
         "agent": AGENT_ID,
         "model": model_id,
-        "mock": MOCK_MODE,
         "upload_count": total_upload_count(),
     }
 
@@ -742,80 +754,11 @@ def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
             stage["status"] = status
 
 
-def reset_stages_after(session: dict[str, Any], stage_id: str) -> None:
-    order = [s["id"] for s in PIPELINE_STAGES]
-    if stage_id not in order:
-        return
-    target_index = order.index(stage_id)
-    for stage in session["stages"]:
-        if order.index(stage["id"]) > target_index:
-            stage["status"] = "pending"
-
-
-def get_stage_status(session: dict[str, Any], stage_id: str) -> str:
-    for stage in session.get("stages", []):
-        if stage.get("id") == stage_id:
-            return str(stage.get("status", "pending"))
-    return "pending"
-
-
-def infer_waiting_gate(session: dict[str, Any], final: str, clarification: dict[str, Any] | None) -> str:
-    if clarification:
-        return "confirm_problem"
-    problem_status = get_stage_status(session, "confirm_problem")
-    evidence_status = get_stage_status(session, "evidence")
-    if problem_status != "done" and evidence_status == "pending":
-        return "confirm_problem"
-    return detect_gate(final)
-
-
 def stage_label(stage_id: str) -> str:
     for stage in PIPELINE_STAGES:
         if stage["id"] == stage_id:
             return stage["label"]
     return stage_id
-
-
-def extract_clarification(text: str) -> dict[str, Any] | None:
-    """Pull a structured {problem, steps} out of a clarification reply."""
-    try:
-        from harness.ontology.json_contract import extract_json_object
-
-        data = extract_json_object(text)
-        problem = data.get("problem")
-        steps = data.get("steps")
-        if isinstance(problem, str) and problem.strip() and isinstance(steps, list):
-            cleaned = [str(item).strip() for item in steps if str(item).strip()]
-            if cleaned:
-                return {"problem": problem.strip(), "steps": cleaned}
-    except Exception:
-        pass
-    problem = ""
-    steps: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        match = re.match(r"^\*{0,2}(?:Question|\u95ee\u9898|\u6838\u5fc3\u95ee\u9898)\s*[:\uff1a]\*{0,2}\s*(.+)$", stripped)
-        if match and not problem:
-            problem = match.group(1).strip()
-            continue
-        match = re.match(r"^\d+[.\u3001)]\s*(.+)$", stripped)
-        if match:
-            steps.append(match.group(1).strip())
-    if problem and steps:
-        return {"problem": problem, "steps": steps}
-    return None
-
-
-def detect_gate(text: str) -> str:
-    """Infer which confirmation gate the coordinator is waiting on."""
-    lowered = text.lower()
-    if re.search(r"(draft\s+schema|schema\s+is\s+ready|schema\s+ready|answerability\s+judgment|relation\s+table|confirm\s+.{0,24}schema)", lowered):
-        return "confirm_schema"
-    if re.search(r"(草案\s*schema|schema\s*(已准备|准备好|可确认)|确认.{0,12}(schema|模式|本\s*schema|当前\s*schema|草案))", text, flags=re.IGNORECASE):
-        return "confirm_schema"
-    if re.search(r"(问题澄清|核心问题|clarified\s+problem|understanding\s+of\s+the\s+question|please\s+confirm|confirm\s+the\s+clarified)", lowered):
-        return "confirm_problem"
-    return ""
 
 
 def get_cached_agent(agent_id: str = AGENT_ID):
@@ -859,58 +802,195 @@ def get_cached_coordinator_agent():
     return _AGENT_SINGLETON
 
 
-def run_real_agent(message: str, thread_id: str, run_dir: Path, emit) -> str:
+def _autonomous_message(
+    question: str, upload_paths: list[str], workspace_dir: str, run_id: str
+) -> str:
+    """Build the single user message that puts the coordinator in autonomous mode.
+
+    Mirrors ``harness/ontology/pipeline.py``: the coordinator drives the entire
+    workflow itself by delegating to its subagents with the ``task`` tool, with
+    no human confirmation gates."""
+    inputs = {
+        "question": question,
+        "upload_paths": upload_paths,
+        "workspace_dir": workspace_dir,
+        "run_id": run_id,
+        "autonomous": True,
+    }
+    return (
+        "You are running in autonomous backend mode: no human is available to "
+        "confirm the gates, so you must drive the COMPLETE ontology workflow end "
+        "to end yourself by delegating to your subagents with the `task` tool, "
+        "and only then give the final answer.\n\n"
+        "Follow your Required Workflow in order. Do not pause to ask the user to "
+        "confirm the clarified problem or the schema; proceed automatically through "
+        "every step. Make sure `workspace_solver` has written "
+        f"`{workspace_dir}/intermediate/solver_result.json` before you produce the "
+        "final answer.\n\nInputs:\n"
+        + json.dumps(inputs, ensure_ascii=False, indent=2)
+        + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
+    )
+
+
+def run_coordinator_autonomous(
+    question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
+) -> str:
+    """Drive one question with the pure-LLM ontology_coordinator.
+
+    The coordinator LLM owns the whole flow: it delegates to each subagent with
+    the ``task`` tool, and the backend only streams what happens. There is no
+    Python state machine, no hardcoded step routing, no fallback. The UI events
+    carry an explicit coordinator-vs-subagent identity so a viewer can see which
+    agent is doing which task:
+
+    - the coordinator's own reasoning streams on the virtual ``__coordinator__``
+      lane (it is the orchestrator, not a stage);
+    - each ``task`` delegation flips the corresponding stage to ``running`` and
+      tags the stage event with the responsible subagent;
+    - a subagent's own model output / tool calls stream on that subagent's stage.
+    """
     from langchain_core.messages import HumanMessage
 
-    agent, agent_cfg = get_cached_agent()
-    # Bind this session to its own run directory so evidence, schema and data
-    # artifacts are isolated per session and the two web-search rounds share one
-    # web_evidence store (ontology tools key off HARNESS_RUN_DIR).
+    agent, _agent_cfg = get_cached_coordinator_agent()
+    # Isolate this question in its own run directory (evidence, schema, data) so
+    # the coordinator and its subagents share one workspace (ontology tools key
+    # off HARNESS_RUN_DIR), and create the canonical run subdirectories up front.
     run_dir.mkdir(parents=True, exist_ok=True)
+    for sub in ("concepts", "data", "src", "intermediate", "intermediate/web_evidence"):
+        (run_dir / sub).mkdir(parents=True, exist_ok=True)
     os.environ["HARNESS_ROOT"] = str(ROOT)
     os.environ["HARNESS_AGENT_ID"] = AGENT_ID
     os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
+
     run_id = run_dir.name
-    message = (
-        f"{message}\n\n[run_context] run_id={run_id}. Persist every run artifact under "
-        f"runs/ontology_workspace_runs/{run_id}/ (evidence_manifest.json, web_evidence/, "
-        "draft_schema.py, data/). Reuse web evidence already persisted in this run instead "
-        f"of repeating searches.\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
-    )
+    workspace_dir = vrun_for(run_dir)
+    message = _autonomous_message(question, upload_paths, workspace_dir, run_id)
 
     final_content = ""
-    config = {"configurable": {"thread_id": thread_id or "default"}}
+    current_stage = ""
+    seen_task_calls: set[str] = set()
+    seen_tool_calls: set[str] = set()
+    done_tool_calls: set[str] = set()
+    emitted_outputs: set[str] = set()
+
+    # Live token streaming, keyed by lane. The coordinator's reasoning goes to the
+    # COORDINATOR_LANE; a subagent's reasoning goes to its stage lane.
+    thinking_buf = ""
+    output_buf = ""
+    last_step_key: str | None = None
+    last_emit_at = 0.0
+    last_emit_len = 0
+    stream_lane = COORDINATOR_LANE
+
+    def push_stream(lane: str, force: bool = False) -> None:
+        nonlocal last_emit_at, last_emit_len
+        now = time.monotonic()
+        size = len(thinking_buf) + len(output_buf)
+        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
+            return
+        last_emit_at = now
+        last_emit_len = size
+        emit({"type": "stream", "stage": lane, "thinking": thinking_buf, "output": output_buf})
+
+    config = {
+        "configurable": {"thread_id": thread_id or f"{run_id}:{AGENT_ID}"},
+        "recursion_limit": 300,
+    }
     for item in agent.stream(
         {"messages": [HumanMessage(content=message)]},
         config=config,
-        stream_mode=["values"],
+        stream_mode=["messages", "values"],
         subgraphs=True,
     ):
         if not isinstance(item, tuple) or len(item) != 3:
             continue
-        namespace, _mode, data = item
+        namespace, mode, data = item
+
+        if mode == "messages":
+            chunk, meta = data
+            if meta.get("langgraph_node") != "model":
+                continue
+            # namespace == () is the coordinator; anything deeper is the subagent
+            # currently delegated to (tracked from the last `task` call).
+            lane = COORDINATOR_LANE if namespace == () else (current_stage or COORDINATOR_LANE)
+            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
+            if step_key != last_step_key:
+                last_step_key = step_key
+                thinking_buf = ""
+                output_buf = ""
+                last_emit_len = 0
+                stream_lane = lane
+            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
+            push_stream(stream_lane)
+            continue
+
+        if mode != "values":
+            continue
         messages = data.get("messages", []) if isinstance(data, dict) else []
         if not messages:
             continue
         last = messages[-1]
-        msg_type = getattr(last, "type", "")
-        tool_calls = getattr(last, "tool_calls", None) or []
-        for call in tool_calls:
-            tool_name = str(call.get("name", ""))
-            if tool_name != "task":
-                emit({"type": "activity", "message": tool_activity(tool_name)})
-                continue
-            args = call.get("args", {}) or {}
-            subagent = str(args.get("subagent_type", "") or args.get("agent", ""))
-            stage = SUBAGENT_STAGE.get(subagent, "")
-            if stage:
-                emit({"type": "stage", "stage": stage, "status": "running"})
-        if namespace == () and msg_type == "ai":
-            content = getattr(last, "content", "") or ""
-            if isinstance(content, list):
-                content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-            if content and not tool_calls:
+        if getattr(last, "type", "") in ("ai", "tool"):
+            push_stream(stream_lane, force=True)
+
+        for msg in messages:
+            mtype = getattr(msg, "type", "")
+            if mtype == "ai":
+                for idx, call in enumerate(getattr(msg, "tool_calls", None) or []):
+                    cid = str(call.get("id") or f"{call.get('name', '')}:{idx}")
+                    tool_name = str(call.get("name", ""))
+                    if tool_name == "task":
+                        if cid in seen_task_calls:
+                            continue
+                        seen_task_calls.add(cid)
+                        args = call.get("args", {}) or {}
+                        subagent = str(args.get("subagent_type", "") or args.get("agent", ""))
+                        stage = SUBAGENT_STAGE.get(subagent, "")
+                        if stage:
+                            current_stage = stage
+                            emit({
+                                "type": "stage",
+                                "stage": stage,
+                                "status": "running",
+                                "agent": subagent,
+                                "agent_label": AGENT_LABELS.get(subagent, subagent),
+                            })
+                    else:
+                        if cid in seen_tool_calls:
+                            continue
+                        seen_tool_calls.add(cid)
+                        if tool_name:
+                            emit({"type": "activity", "message": tool_activity(tool_name, status="running", call_id=cid)})
+            elif mtype == "tool":
+                cid = str(getattr(msg, "tool_call_id", "") or "")
+                if not cid or cid in done_tool_calls:
+                    continue
+                done_tool_calls.add(cid)
+                tool_name = str(getattr(msg, "name", "") or "")
+                if tool_name and tool_name != "task":
+                    result = getattr(msg, "content", "")
+                    if isinstance(result, list):
+                        result = " ".join(str(part) for part in result)
+                    emit({"type": "activity", "message": tool_activity(tool_name, status="done", call_id=cid, output=str(result))})
+
+        last_type = getattr(last, "type", "")
+        last_calls = getattr(last, "tool_calls", None) or []
+        content = getattr(last, "content", "") or ""
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        if last_type == "ai" and content and not last_calls:
+            if namespace == ():
+                # The coordinator's final, tool-call-free message is the answer.
                 final_content = content
+            elif current_stage:
+                # A subagent finished its step: persist a compact output card so
+                # the run history shows what that agent produced.
+                if content not in emitted_outputs:
+                    emitted_outputs.add(content)
+                    emit({"type": "activity", "message": model_activity(current_stage, content)})
+
+    if current_stage:
+        emit({"type": "stage", "stage": current_stage, "status": "done"})
     return final_content
 
 
@@ -942,685 +1022,6 @@ def _accumulate_stream(chunk: Any, thinking_buf: str, output_buf: str) -> tuple[
     return thinking_buf, output_buf
 
 
-def run_problem_clarifier_agent(question: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit) -> str:
-    from langchain_core.messages import HumanMessage
-
-    agent, _agent_cfg = get_cached_agent("problem_clarifier")
-    run_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["HARNESS_ROOT"] = str(ROOT)
-    os.environ["HARNESS_AGENT_ID"] = "problem_clarifier"
-    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
-    payload = json.dumps({
-        "question": question,
-        "upload_paths": upload_paths,
-        "_ui_output_contract": USER_VISIBLE_OUTPUT_CONTRACT,
-    }, ensure_ascii=False)
-    emit({"type": "stage", "stage": "clarify", "status": "running"})
-
-    final_content = ""
-    config = {
-        "configurable": {"thread_id": f"{thread_id}:clarify" or "clarify"},
-        "recursion_limit": 120,
-    }
-    thinking_buf = ""
-    output_buf = ""
-    last_step_key: str | None = None
-    last_emit_at = 0.0
-    last_emit_len = 0
-
-    def push_stream(force: bool = False) -> None:
-        nonlocal last_emit_at, last_emit_len
-        now = time.monotonic()
-        size = len(thinking_buf) + len(output_buf)
-        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
-            return
-        last_emit_at = now
-        last_emit_len = size
-        emit({"type": "stream", "stage": "clarify", "thinking": thinking_buf, "output": output_buf})
-
-    for item in agent.stream(
-        {"messages": [HumanMessage(content=payload)]},
-        config=config,
-        stream_mode=["messages", "values"],
-        subgraphs=True,
-    ):
-        if not isinstance(item, tuple) or len(item) != 3:
-            continue
-        namespace, mode, data = item
-
-        if mode == "messages":
-            chunk, meta = data
-            if meta.get("langgraph_node") != "model":
-                continue
-            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
-            if step_key != last_step_key:
-                last_step_key = step_key
-                thinking_buf = ""
-                output_buf = ""
-                last_emit_len = 0
-            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
-            push_stream()
-            continue
-
-        if mode != "values" or namespace != ():
-            continue
-        messages = data.get("messages", []) if isinstance(data, dict) else []
-        if not messages:
-            continue
-        last = messages[-1]
-        if getattr(last, "type", "") != "ai":
-            continue
-        content = getattr(last, "content", "") or ""
-        if isinstance(content, list):
-            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-        if content:
-            final_content = content
-            push_stream(force=True)
-            emit({"type": "activity", "message": model_activity("clarify", content)})
-    return final_content
-
-
-def extract_json_payload(text: str) -> dict[str, Any]:
-    try:
-        from harness.ontology.json_contract import extract_json_object
-
-        data = extract_json_object(text)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def run_subagent_json(
-    agent_id: str,
-    payload: dict[str, Any],
-    thread_id: str,
-    run_dir: Path,
-    emit,
-    max_tool_calls: int = 48,
-    stage_id: str = "",
-) -> dict[str, Any]:
-    from langchain_core.messages import HumanMessage
-
-    agent, _agent_cfg = get_cached_agent(agent_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    os.environ["HARNESS_ROOT"] = str(ROOT)
-    os.environ["HARNESS_AGENT_ID"] = agent_id
-    os.environ["HARNESS_RUN_DIR"] = str(run_dir.resolve())
-
-    final_content = ""
-    emitted_model_output = ""
-    seen_calls: set[str] = set()
-    done_calls: set[str] = set()
-    tool_call_count = 0
-    config = {
-        "configurable": {"thread_id": f"{thread_id}:{agent_id}"},
-        "recursion_limit": 120,
-    }
-
-    # Live token streaming state (per model turn).
-    thinking_buf = ""
-    output_buf = ""
-    last_step_key: str | None = None
-    last_emit_at = 0.0
-    last_emit_len = 0
-
-    def push_stream(force: bool = False) -> None:
-        nonlocal last_emit_at, last_emit_len
-        if not stage_id:
-            return
-        now = time.monotonic()
-        size = len(thinking_buf) + len(output_buf)
-        if not force and size - last_emit_len < 48 and now - last_emit_at < 0.35:
-            return
-        last_emit_at = now
-        last_emit_len = size
-        emit({
-            "type": "stream",
-            "stage": stage_id,
-            "thinking": thinking_buf,
-            "output": output_buf,
-        })
-
-    for item in agent.stream(
-        {"messages": [HumanMessage(content=json.dumps({
-            **payload,
-            "_ui_output_contract": USER_VISIBLE_OUTPUT_CONTRACT,
-        }, ensure_ascii=False))]},
-        config=config,
-        stream_mode=["messages", "values"],
-        subgraphs=True,
-    ):
-        if not isinstance(item, tuple) or len(item) != 3:
-            continue
-        namespace, mode, data = item
-
-        if mode == "messages":
-            chunk, meta = data
-            if meta.get("langgraph_node") != "model":
-                continue
-            step_key = f"{repr(namespace)}|{meta.get('langgraph_step')}|{meta.get('run_id')}"
-            if step_key != last_step_key:
-                # New model turn: reset the live buffers so the card shows the
-                # reasoning/output of the step that is currently running.
-                last_step_key = step_key
-                thinking_buf = ""
-                output_buf = ""
-                last_emit_len = 0
-            thinking_buf, output_buf = _accumulate_stream(chunk, thinking_buf, output_buf)
-            push_stream()
-            continue
-
-        if mode != "values":
-            continue
-        messages = data.get("messages", []) if isinstance(data, dict) else []
-        if not messages:
-            continue
-        last = messages[-1]
-        if getattr(last, "type", "") in ("ai", "tool"):
-            push_stream(force=True)
-        # Emit one "running" activity per tool call and one "done" activity per
-        # tool result, correlated by tool_call_id. This mirrors the reference
-        # frontend's tool_call/tool_end stream so the UI can show each tool and
-        # its output in real time instead of a single static line.
-        truncated = False
-        for msg in messages:
-            mtype = getattr(msg, "type", "")
-            if mtype == "ai":
-                for idx, call in enumerate(getattr(msg, "tool_calls", None) or []):
-                    cid = str(call.get("id") or f"{call.get('name', '')}:{idx}")
-                    if cid in seen_calls:
-                        continue
-                    seen_calls.add(cid)
-                    tool_name = str(call.get("name", ""))
-                    tool_call_count += 1
-                    if tool_name and tool_name != "task":
-                        emit({"type": "activity", "message": tool_activity(tool_name, status="running", call_id=cid)})
-                    if tool_call_count >= max_tool_calls:
-                        truncated = True
-            elif mtype == "tool":
-                cid = str(getattr(msg, "tool_call_id", "") or "")
-                if not cid or cid in done_calls:
-                    continue
-                done_calls.add(cid)
-                tool_name = str(getattr(msg, "name", "") or "")
-                result = getattr(msg, "content", "")
-                if isinstance(result, list):
-                    result = " ".join(str(part) for part in result)
-                if tool_name and tool_name != "task":
-                    emit({"type": "activity", "message": tool_activity(tool_name, status="done", call_id=cid, output=str(result))})
-        if truncated:
-            parsed = extract_json_payload(final_content)
-            parsed["_raw"] = final_content
-            parsed["_truncated"] = True
-            return parsed
-        if getattr(last, "type", "") == "ai":
-            content = getattr(last, "content", "") or ""
-            if isinstance(content, list):
-                content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-            if content and not (getattr(last, "tool_calls", None) or []):
-                final_content = content
-                if stage_id and content != emitted_model_output:
-                    emitted_model_output = content
-                    emit({"type": "activity", "message": model_activity(stage_id, content)})
-    parsed = extract_json_payload(final_content)
-    parsed["_raw"] = final_content
-    return parsed
-
-
-def web_sources_from_run(run_dir: Path) -> list[dict[str, Any]]:
-    sources: list[dict[str, Any]] = []
-    for item in load_web_evidence_files(run_dir):
-        sources.append({
-            "source_id": item.get("source_id", ""),
-            "source_kind": "web",
-            "url": item.get("url", ""),
-            "title": item.get("title", ""),
-            "evidence_path": str(run_dir / "intermediate" / "web_evidence" / f"{item.get('source_id', '')}.json"),
-            "reason": item.get("snippet", "")[:220],
-        })
-    return [item for item in sources if item["source_id"]]
-
-
-def merge_sources(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for group in groups:
-        for source in group:
-            source_id = str(source.get("source_id", "")).strip()
-            if not source_id or source_id in seen:
-                continue
-            seen.add(source_id)
-            merged.append(source)
-    return merged
-
-
-def write_evidence_manifest(run_dir: Path, question: str, payload: dict[str, Any], upload_paths: list[str]) -> Path:
-    manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    payload_sources = payload.get("sources", [])
-    if not isinstance(payload_sources, list):
-        payload_sources = []
-    upload_sources = [
-        {
-            "source_id": Path(path).name,
-            "source_kind": "upload",
-            "file_type": Path(path).suffix.lstrip(".") or "unknown",
-            "file_path": path,
-            "reason": "User-uploaded evidence for schema building and data extraction.",
-        }
-        for path in upload_paths
-    ]
-    sources = merge_sources(payload_sources, upload_sources, web_sources_from_run(run_dir))
-    needs_web_search = bool(payload.get("needs_web_search")) or any(
-        source.get("source_kind") == "web" for source in sources
-    ) or not upload_paths
-    schema_plan = payload.get("schema_plan")
-    if not isinstance(schema_plan, list):
-        schema_plan = []
-    manifest = {
-        "question": question,
-        "sources": sources,
-        "needs_web_search": needs_web_search,
-        "handler": "schema_builder",
-        "schema_plan": schema_plan,
-    }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return manifest_path
-
-
-def schema_relation_table(schema_text: str) -> str:
-    parsed = parse_schema(schema_text)
-    entity_meta = {
-        class_info.name: (class_info.entity_type, class_info.value_type)
-        for class_info in parsed.classes
-    }
-    rows = []
-    for class_info in parsed.classes:
-        for field in class_info.fields:
-            if field.kind == "relation" and not field.reverse:
-                head_type, head_data_type = entity_meta.get(class_info.name, ("", ""))
-                tail_type, tail_data_type = entity_meta.get(field.target or "", ("", ""))
-                rows.append((
-                    class_info.name,
-                    head_type,
-                    head_data_type,
-                    field.name,
-                    field.target or "",
-                    tail_type,
-                    tail_data_type,
-                ))
-    if not rows:
-        return ""
-    lines = [
-        "| Head entity | Head entity type | Head entity data type | Relation name | Tail entity | Tail entity type | Tail entity data type |",
-        "|---|---|---|---|---|---|---|",
-    ]
-    lines.extend(
-        f"| {head} | {head_type} | {head_data_type} | {relation} | {tail} | {tail_type} | {tail_data_type} |"
-        for head, head_type, head_data_type, relation, tail, tail_type, tail_data_type in rows
-    )
-    return "\n".join(lines)
-
-
-def schema_entity_table(schema_text: str) -> str:
-    parsed = parse_schema(schema_text)
-    rows = [
-        (class_info.name, class_info.entity_type, class_info.value_type)
-        for class_info in parsed.classes
-    ]
-    if not rows:
-        return ""
-    lines = [
-        "| Entity | Entity type | Entity data type |",
-        "|---|---|---|",
-    ]
-    lines.extend(
-        f"| {entity} | {entity_type} | {data_type} |"
-        for entity, entity_type, data_type in rows
-    )
-    return "\n".join(lines)
-
-
-def schema_confirmation_message(run_dir: Path, judgment: dict[str, Any], evidence: dict[str, Any]) -> str:
-    draft_path = run_dir / "concepts" / "draft_schema.py"
-    schema_text = draft_path.read_text(encoding="utf-8")
-    entity_table = schema_entity_table(schema_text)
-    relation_table = schema_relation_table(schema_text)
-    parts = []
-    if entity_table:
-        parts.extend(["**Entity Definitions**", "", entity_table])
-    if relation_table:
-        parts.extend(["", "**Relation Schema**", "", relation_table])
-    return "\n".join(parts)
-
-
-def run_schema_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
-    run_dir = session_run_dir(session)
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    emit({"type": "stage", "stage": "evidence", "status": "running"})
-    evidence_payload = run_subagent_json(
-        "evidence_collector",
-        {"question": question, "upload_paths": upload_paths},
-        session["thread_id"],
-        run_dir,
-        emit,
-        stage_id="evidence",
-    )
-    manifest_path = write_evidence_manifest(run_dir, question, evidence_payload, upload_paths)
-    evidence = read_json(manifest_path)
-    vrun = vrun_for(run_dir)
-    manifest_vpath = f"{vrun}/intermediate/evidence_manifest.json"
-
-    draft_path = run_dir / "concepts" / "draft_schema.py"
-    builder_base = {
-        "question": question,
-        "sources": evidence.get("sources", []),
-        "evidence_manifest_path": manifest_vpath,
-    }
-
-    emit({"type": "stage", "stage": "schema_build", "status": "running"})
-    # The schema builder must actually write concepts/draft_schema.py via the
-    # execution layer; it occasionally returns without doing so, so retry once
-    # with an explicit instruction before giving up.
-    builder_payload: dict[str, Any] = {}
-    for attempt in range(2):
-        payload = dict(builder_base)
-        if attempt > 0:
-            payload["correction"] = {
-                "message": (
-                    "You did not produce concepts/draft_schema.py. Write the schema "
-                    "to that path using write_file, then call schema_validator."
-                ),
-            }
-        builder_payload = run_subagent_json(
-            "schema_builder",
-            payload,
-            session["thread_id"],
-            run_dir,
-            emit,
-            stage_id="schema_build",
-        )
-        schema_text = builder_payload.get("schema_text")
-        if isinstance(schema_text, str) and schema_text.strip() and not draft_path.exists():
-            result = write_draft_schema(schema_text, draft_path)
-            if not result.get("valid", False):
-                return "Schema construction failed validation; please retry."
-        if draft_path.exists():
-            break
-    if not draft_path.exists():
-        return "Schema construction did not produce a draft schema; please retry."
-
-    emit({"type": "stage", "stage": "schema_judge", "status": "running"})
-    judger_payload = run_subagent_json(
-        "schema_judger",
-        {"question": question, "schema_path": f"{vrun}/concepts/draft_schema.py"},
-        session["thread_id"],
-        run_dir,
-        emit,
-        stage_id="schema_judge",
-    )
-    judgment = judger_payload if "answerable" in judger_payload else {"answerable": False}
-
-    emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
-    return schema_confirmation_message(run_dir, judgment, evidence)
-
-
-def _instance_rows(data: Any) -> int:
-    if not isinstance(data, dict):
-        return 0
-    return sum(len(v) for v in data.values() if isinstance(v, list))
-
-
-def select_best_instances(
-    instances_path: Path, confirmed_path: Path
-) -> dict[str, Any] | None:
-    """Pick the best instances payload across the canonical file and any sibling
-    scratch files, then promote it back to data/instances.json.
-
-    The data_extractor only has `write_file`, which refuses to overwrite an
-    existing file, so when its first instances.json fails schema validation it
-    writes the corrected payload to a new path (e.g. instances_final.json,
-    instances_v2.json). We therefore consider every instances*.json file and
-    prefer the schema-conforming one with the most rows; if none conform we fall
-    back to the most populated payload so the correction retry still has data."""
-    data_dir = instances_path.parent
-    if not data_dir.exists():
-        return None
-    best_valid: dict[str, Any] | None = None
-    best_valid_rows = -1
-    best_any: dict[str, Any] | None = None
-    best_any_rows = -1
-    for path in sorted(data_dir.glob("instances*.json")):
-        try:
-            candidate = read_json(path)
-        except Exception:
-            continue
-        if not isinstance(candidate, dict):
-            continue
-        rows = _instance_rows(candidate)
-        if rows <= 0:
-            continue
-        if rows > best_any_rows:
-            best_any, best_any_rows = candidate, rows
-        try:
-            conforms = validate_instances(candidate, confirmed_path).get("ok", False)
-        except Exception:
-            conforms = False
-        if conforms and rows > best_valid_rows:
-            best_valid, best_valid_rows = candidate, rows
-    chosen = best_valid if best_valid is not None else best_any
-    if chosen is None:
-        return None
-    instances_path.write_text(
-        json.dumps(chosen, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return chosen
-
-
-def run_solve_pipeline(question: str, upload_paths: list[str], session: dict[str, Any], emit) -> str:
-    run_dir = session_run_dir(session)
-    draft_path = run_dir / "concepts" / "draft_schema.py"
-    confirmed_path = run_dir / "concepts" / "confirmed_schema.py"
-    if draft_path.exists() and not confirmed_path.exists():
-        result = confirm_schema(draft_path, confirmed_path)
-        if not result.get("valid", False):
-            return "Schema confirmation failed; please edit the schema and try again."
-    manifest_path = run_dir / "intermediate" / "evidence_manifest.json"
-    evidence = read_json(manifest_path) if manifest_path.exists() else {"sources": []}
-    vrun = vrun_for(run_dir)
-    manifest_vpath = f"{vrun}/intermediate/evidence_manifest.json"
-    instances_path = run_dir / "data" / "instances.json"
-
-    extract_payload = {
-        "schema_path": f"{vrun}/concepts/confirmed_schema.py",
-        "instances_path": f"{vrun}/data/instances.json",
-        "schema_outline": schema_outline(confirmed_path),
-        "sources": evidence.get("sources", []),
-        "evidence_manifest_path": manifest_vpath,
-    }
-
-    emit({"type": "stage", "stage": "extract", "status": "running"})
-    run_subagent_json(
-        "data_extractor",
-        extract_payload,
-        session["thread_id"],
-        run_dir,
-        emit,
-        max_tool_calls=48,
-        stage_id="extract",
-    )
-    # The extractor is the most tool-heavy step; retry once if it produced no
-    # instances or instances that do not conform to the confirmed schema. The
-    # extractor cannot overwrite files, so it may have written the conforming
-    # payload to a sibling path; promote the best conforming candidate.
-    instances = select_best_instances(instances_path, confirmed_path)
-    if instances is None:
-        instances = read_json(instances_path) if instances_path.exists() else None
-    validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
-    if not instances or _instance_rows(instances) == 0 or not validation.get("ok"):
-        correction = dict(extract_payload)
-        correction["correction"] = {
-            "message": (
-                "Your previous attempt did not produce a valid, populated "
-                "instances payload. write_file cannot overwrite an existing file, "
-                "so write the COMPLETE corrected collection to a NEW path "
-                "data/instances_final.json in a single write_file call. Use ONLY "
-                "the confirmed schema's exact entity class names as top-level keys "
-                "and ONLY their declared fields (no extra or misspelled fields)."
-            ),
-            "instances_path": f"{vrun}/data/instances_final.json",
-            "required_concepts": validation.get("schema_concepts", []),
-        }
-        run_subagent_json(
-            "data_extractor",
-            correction,
-            session["thread_id"],
-            run_dir,
-            emit,
-            max_tool_calls=48,
-            stage_id="extract",
-        )
-        instances = select_best_instances(instances_path, confirmed_path)
-        if instances is None:
-            instances = read_json(instances_path) if instances_path.exists() else None
-        validation = validate_instances(instances, confirmed_path) if instances else {"ok": False}
-    if not instances or _instance_rows(instances) == 0:
-        return "Data extraction did not produce instances; please retry."
-    if not validation.get("ok"):
-        return "Extracted data did not conform to the confirmed schema; please retry."
-    extraction = persist_extraction(instances, confirmed_path, run_dir)
-    if not extraction.get("ok"):
-        return "Failed to persist extracted data; please retry."
-
-    emit({"type": "stage", "stage": "solve", "status": "running"})
-    build_workspace(
-        run_dir,
-        confirmed_path,
-        run_dir / "data" / "instances.json",
-        run_dir / "data" / "facts.csv",
-        run_dir / "data" / "relations.csv",
-    )
-    solver_payload = run_subagent_json(
-        "workspace_solver",
-        {
-            "question": question,
-            "schema_path": f"{vrun}/concepts/confirmed_schema.py",
-            "workspace_dir": vrun,
-        },
-        session["thread_id"],
-        run_dir,
-        emit,
-        max_tool_calls=48,
-        stage_id="solve",
-    )
-    solver = read_solver_result(run_dir)
-
-    emit({"type": "stage", "stage": "solve", "status": "done"})
-    if solver_payload.get("_raw") and solver.get("ok"):
-        return sanitize_user_visible_output(str(solver_payload["_raw"]).strip())
-    if solver.get("ok"):
-        return sanitize_user_visible_output(str(solver.get("answer", "")))
-    return "Solving failed. Please review the run results and try again."
-
-
-MOCK_SCHEMA = '''from typing import List, Optional
-
-
-class Company:  # entity_type: Organization
-    _id: str
-    name: str
-    country: Optional[str]
-    operates_in_industry: List["Industry"]
-
-
-class Industry:  # entity_type: BusinessDomain
-    _id: str
-    name: str
-    operates_in_industry_r: List["Company"]  # reverse
-'''
-
-
-def _write_mock_web_evidence(run_dir: Path, source_id: str, stage: str, url: str, title: str, query: str) -> None:
-    web_dir = run_dir / "intermediate" / "web_evidence"
-    web_dir.mkdir(parents=True, exist_ok=True)
-    (web_dir / f"{source_id}.json").write_text(json.dumps({
-        "source_id": source_id,
-        "query": query,
-        "url": url,
-        "title": title,
-        "snippet": "Mock persisted web evidence for local UI testing.",
-        "retrieved_at": now_iso(),
-        "collected_stage": stage,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def run_mock_agent(message: str, session: dict[str, Any], emit) -> str:
-    """Deterministic walkthrough of the pipeline for local UI testing."""
-    stages = {s["id"]: s["status"] for s in session["stages"]}
-    run_dir = session_run_dir(session)
-    if stages.get("confirm_problem") == "waiting":
-        (run_dir / "concepts").mkdir(parents=True, exist_ok=True)
-        (run_dir / "intermediate").mkdir(parents=True, exist_ok=True)
-        (run_dir / "concepts" / "draft_schema.py").write_text(MOCK_SCHEMA, encoding="utf-8")
-        (run_dir / "intermediate" / "evidence_manifest.json").write_text(json.dumps({
-            "question": "Which companies in the US do data analytics?",
-            "needs_web_search": True,
-            "sources": [
-                {"source_id": "company_sample.csv", "source_kind": "upload", "file_type": "csv",
-                 "reason": "Sample company table with company name, country and industry fields"},
-                {"source_id": "web_001", "source_kind": "web", "file_type": "html",
-                 "title": "Top data analytics companies in the US",
-                 "url": "https://example.com/us-data-analytics-companies",
-                 "collected_stage": "evidence",
-                 "reason": "Supplements industry sub-domain labels missing from the upload"},
-            ],
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        # Round 1 web evidence, persisted to this session's run dir.
-        _write_mock_web_evidence(
-            run_dir, "web_001", "evidence",
-            "https://example.com/us-data-analytics-companies",
-            "Top data analytics companies in the US",
-            "US data analytics companies",
-        )
-        for stage, pause in (("evidence", 1.2), ("schema_build", 1.6), ("schema_judge", 1.2)):
-            emit({"type": "stage", "stage": stage, "status": "running"})
-            time.sleep(pause)
-        emit({"type": "stage", "stage": "confirm_schema", "status": "waiting"})
-        return schema_confirmation_message(run_dir, {"answerable": True}, {"sources": []})
-    if stages.get("confirm_schema") == "waiting":
-        if (run_dir / "concepts" / "draft_schema.py").exists():
-            confirm_schema(run_dir / "concepts" / "draft_schema.py", run_dir / "concepts" / "confirmed_schema.py")
-            (run_dir / "intermediate" / "extraction_report.json").write_text(json.dumps({
-                "total_instances": 18, "total_facts": 42, "total_relations": 16,
-                "relation_types_used": ["operates_in_industry"], "avg_confidence": 0.87,
-            }, indent=2), encoding="utf-8")
-            # Round 2 supplementary web evidence reuses the same run dir (extract stage).
-            _write_mock_web_evidence(
-                run_dir, "web_002", "extract",
-                "https://example.com/analytics-subdomains",
-                "Analytics sub-domain taxonomy",
-                "data analytics sub-domains",
-            )
-        emit({"type": "stage", "stage": "extract", "status": "running"})
-        time.sleep(1.6)
-        emit({"type": "stage", "stage": "solve", "status": "running"})
-        time.sleep(1.6)
-        emit({"type": "stage", "stage": "solve", "status": "done"})
-        return (
-            "Data analytics companies in the US include: Palantir, Databricks, and Snowflake."
-        )
-    emit({"type": "stage", "stage": "clarify", "status": "running"})
-    time.sleep(1.4)
-    emit({"type": "stage", "stage": "confirm_problem", "status": "waiting"})
-    return (
-        "Here is my understanding of the question. Please confirm:\n\n"
-        "**Question**: List data analytics companies operating in the US, including company names and their sub-domains.\n\n"
-        "**Solution steps**:\n1. Build Company and Industry entities and their relations\n2. Search for and extract matching data\n3. Return the list of company names and domains\n\n"
-        "Reply \"Confirm\" to continue, or tell me what needs to change."
-    )
-
-
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
@@ -1640,25 +1041,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     str(payload.get("content", "")),
                     list(payload.get("upload_ids", []) or []),
                 )
-            elif payload.get("type") == "confirm_problem":
-                problem = str(payload.get("problem", "")).strip()
-                steps = [str(item).strip() for item in (payload.get("steps") or []) if str(item).strip()]
-                if not problem or not steps:
-                    error_message = ui_message("system", "The problem statement and at least one step are required.", tone="error")
-                    await websocket.send_text(json.dumps({"type": "error", "message": error_message}, ensure_ascii=False))
-                    continue
-                current = STORE.get(session["id"])
-                set_stage(current, "confirm_problem", "done")
-                reset_stages_after(current, "confirm_problem")
-                current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
-                STORE.save(current)
-                composed = (
-                    "I confirm the clarified problem.\n\n"
-                    f"**Question**: {problem}\n\n"
-                    "**Solution steps**:\n"
-                    + "\n".join(f"{index + 1}. {step}" for index, step in enumerate(steps))
-                )
-                await handle_chat(websocket, session["id"], composed, [])
             elif payload.get("type") == "history":
                 await websocket.send_text(
                     json.dumps({"type": "history", "session": STORE.get(session["id"])}, ensure_ascii=False)
@@ -1714,22 +1096,17 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
 
     def run_agent_thread() -> None:
         try:
+            # Each question gets a fresh run directory so the coordinator and its
+            # subagents always write into a clean workspace (write_file refuses to
+            # overwrite) and the Workbench reads the latest run. Persist the run_id
+            # before invoking so the artifact endpoints resolve to this run.
+            run_id = f"sess-{safe_session_id(session_id)}-{int(time.time() * 1000)}"
             current = STORE.get(session_id)
-            clarification = current.get("clarification", {})
-            confirmed_problem = ""
-            if isinstance(clarification, dict):
-                confirmed_problem = str(clarification.get("problem", "")).strip()
-            pipeline_question = confirmed_problem or content
-            if MOCK_MODE:
-                final = run_mock_agent(agent_input, session, emit)
-            elif get_stage_status(session, "confirm_problem") != "done" and get_stage_status(session, "evidence") == "pending":
-                final = run_problem_clarifier_agent(content, paths, session["thread_id"], session_run_dir(session), emit)
-            elif get_stage_status(current, "confirm_schema") in ("waiting", "done"):
-                final = run_solve_pipeline(pipeline_question, paths, current, emit)
-            elif get_stage_status(current, "evidence") in ("pending", "running", "waiting") or get_stage_status(current, "schema_build") != "done":
-                final = run_schema_pipeline(pipeline_question, paths, current, emit)
-            else:
-                final = run_real_agent(agent_input, session["thread_id"], session_run_dir(session), emit)
+            current["run_id"] = run_id
+            STORE.save(current)
+            final = run_coordinator_autonomous(
+                content, paths, f"{run_id}:{AGENT_ID}", RUNS_DIR / run_id, emit
+            )
             emit({"type": "_done", "final": final})
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a friendly error.
             import traceback
@@ -1749,41 +1126,12 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                 break
 
             if event["type"] == "_done":
+                # Autonomous mode: the coordinator's final message is the answer.
+                # There are no confirmation gates to infer.
                 final = str(event.get("final", "")).strip()
                 session = STORE.get(session_id)
                 if final:
-                    clarification = extract_clarification(final)
-                    gate = infer_waiting_gate(session, final, clarification)
-                    if gate:
-                        already_waiting = any(
-                            item.get("id") == gate and item.get("status") == "waiting"
-                            for item in session.get("stages", [])
-                        )
-                        if not already_waiting:
-                            set_stage(session, gate, "waiting")
-                            reset_stages_after(session, gate)
-                            await websocket.send_text(json.dumps(
-                                {
-                                    "type": "stage",
-                                    "stage": gate,
-                                    "status": "waiting",
-                                    "label": stage_label(gate),
-                                    "stages": session["stages"],
-                                },
-                                ensure_ascii=False,
-                            ))
-                        key = f"{gate}:waiting"
-                        if key not in activity_seen:
-                            activity_seen.add(key)
-                            activity = stage_activity(gate, "waiting")
-                            session["messages"].append(activity)
-                            await websocket.send_text(json.dumps({"type": "activity", "message": activity}, ensure_ascii=False))
-                        if gate == "confirm_problem" and clarification:
-                            session["clarification"] = {**clarification, "status": "draft"}
-                    if clarification:
-                        assistant_message = ui_message("assistant", final, clarification=clarification)
-                    else:
-                        assistant_message = ui_message("assistant", final)
+                    assistant_message = ui_message("assistant", final)
                     session["messages"].append(assistant_message)
                     STORE.save(session)
                     await websocket.send_text(
@@ -1835,6 +1183,8 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
                     "status": status,
                     "label": stage_label(event["stage"]),
                     "detail": STAGE_RUNNING_TEXT.get(event["stage"], ""),
+                    "agent": event.get("agent", ""),
+                    "agent_label": event.get("agent_label", ""),
                     "stages": session["stages"],
                 }, ensure_ascii=False))
                 if activity is not None:
@@ -1884,25 +1234,6 @@ async def chat_fallback(session_id: str, request: Request):
             str(payload.get("content", "")),
             list(payload.get("upload_ids", []) or []),
         )
-    elif payload_type == "confirm_problem":
-        problem = str(payload.get("problem", "")).strip()
-        steps = [str(item).strip() for item in (payload.get("steps") or []) if str(item).strip()]
-        if not problem or not steps:
-            error_message = ui_message("system", "The problem statement and at least one step are required.", tone="error")
-            sink.events.append({"type": "error", "message": error_message})
-        else:
-            current = STORE.get(session["id"])
-            set_stage(current, "confirm_problem", "done")
-            reset_stages_after(current, "confirm_problem")
-            current["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
-            STORE.save(current)
-            composed = (
-                "I confirm the clarified problem.\n\n"
-                f"**Question**: {problem}\n\n"
-                "**Solution steps**:\n"
-                + "\n".join(f"{index + 1}. {step}" for index, step in enumerate(steps))
-            )
-            await handle_chat(sink, session["id"], composed, [])
     elif payload_type == "history":
         sink.events.append({"type": "history", "session": STORE.get(session["id"])})
     else:
