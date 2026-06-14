@@ -908,13 +908,37 @@
       .join(', ');
   }
 
-  // Polished attribute chips for the schema tables.
+  // Polished attribute chips for the schema tables (read-only view).
   function attributesCellHtml(item) {
     const attrs = (item && item.attributes) || [];
     if (!attrs.length) return '<span class="onto-muted">—</span>';
     return '<div class="onto-attr-chips">' + attrs.map((a) =>
       `<span class="onto-attr-chip"><span class="ac-name">${escapeHtml(attrName(a))}${a.optional ? '?' : ''}</span><span class="ac-type">${escapeHtml(attrType(a))}</span></span>`
     ).join('') + '</div>';
+  }
+
+  const ATTR_TYPES = ['str', 'int', 'float', 'bool'];
+
+  // Editable attribute editor for a draft entity: each attribute gets a name
+  // input, a data-type select, an "optional" toggle, and a delete control, plus
+  // an "+ Add attribute" button. `entityIndex` is the entity's position among
+  // the entity rows (matches how the change handlers look the entity back up).
+  function attributesEditHtml(item, entityIndex) {
+    const attrs = (item && item.attributes) || [];
+    const rows = attrs.map((a, ai) => {
+      const current = ATTR_TYPES.includes(attrType(a)) ? attrType(a) : 'str';
+      const typeOpts = ATTR_TYPES.map((opt) =>
+        `<option value="${opt}"${opt === current ? ' selected' : ''}>${opt}</option>`
+      ).join('');
+      return `
+        <div class="onto-attr-edit">
+          <input class="onto-attr-input" data-index="${entityIndex}" data-attr="${ai}" value="${escapeHtml(attrName(a))}" placeholder="attribute">
+          <select class="onto-attr-type" data-index="${entityIndex}" data-attr="${ai}">${typeOpts}</select>
+          <label class="onto-attr-optional" title="Mark this attribute optional"><input type="checkbox" class="onto-attr-opt" data-index="${entityIndex}" data-attr="${ai}"${a.optional ? ' checked' : ''}>opt</label>
+          <button type="button" class="onto-attr-del" data-index="${entityIndex}" data-attr="${ai}" title="Remove attribute" aria-label="Remove attribute">×</button>
+        </div>`;
+    }).join('');
+    return `<div class="onto-attr-editor">${rows}<button type="button" class="onto-attr-add" data-index="${entityIndex}">+ Add attribute</button></div>`;
   }
 
   function schemaPreviewTablesHtml() {
@@ -2034,7 +2058,7 @@
               <option value="int"${dataType === 'int' ? ' selected' : ''}>int</option>
             </select>
           </td>
-          <td class="onto-attr-cell">${attributesCellHtml(item)}</td>
+          <td class="onto-attr-cell">${attributesEditHtml(item, index)}</td>
           <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="entity" data-index="${index}" title="Remove entity" aria-label="Remove entity">×</button></td>
         </tr>`;
     }).join('');
@@ -2070,7 +2094,7 @@
       </div>` : '';
 
     const tableBody = `
-      <div class="schema-edit-hint">${editable ? 'Editable — edit the entity type, pick the entity data type, set relation endpoints with the dropdowns, then <strong>Apply changes</strong>.' : 'This schema is confirmed and read-only.'}</div>
+      <div class="schema-edit-hint">${editable ? 'Editable — rename entities, edit each attribute and its data type, toggle <em>opt</em> for optional fields, set relation endpoints, then <strong>Apply changes</strong>.' : 'This schema is confirmed and read-only.'}</div>
       <div class="onto-table-block">
         <div class="onto-table-head"><h4>Entity Definitions</h4>${editable ? '<button type="button" class="onto-add-row" data-add="entity">+ Add entity</button>' : ''}</div>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
@@ -2226,6 +2250,61 @@
           const first = entityTypeOf(state.schemaForm.find((i) => i.type === 'entity') || {});
           state.schemaForm.push({ type: 'relation', head_entity_type: first, relation_type: 'new_relation', tail_entity_type: first });
         }
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+
+    // Attribute edits (name / data type / optional / delete / add) on a draft
+    // entity. Look the entity up the same way as the other cell handlers — by
+    // its position among the entity rows — and mutate its `attributes` list.
+    const entityAt = (index) => state.schemaForm.filter((item) => item.type === 'entity')[index];
+    const attrAt = (node) => {
+      const entity = entityAt(Number(node.getAttribute('data-index')));
+      const ai = Number(node.getAttribute('data-attr'));
+      if (!entity || !Array.isArray(entity.attributes) || !entity.attributes[ai]) return null;
+      return entity.attributes[ai];
+    };
+    el.schemaModalBody.querySelectorAll('.onto-attr-input').forEach((input) => {
+      input.addEventListener('input', () => {
+        const attr = attrAt(input);
+        if (!attr) return;
+        attr.attribute = input.value;
+        markDirty();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-type').forEach((select) => {
+      select.addEventListener('change', () => {
+        const attr = attrAt(select);
+        if (!attr) return;
+        attr.attribute_data_type = select.value;
+        markDirty();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-opt').forEach((box) => {
+      box.addEventListener('change', () => {
+        const attr = attrAt(box);
+        if (!attr) return;
+        attr.optional = box.checked;
+        markDirty();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-del').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const entity = entityAt(Number(btn.getAttribute('data-index')));
+        const ai = Number(btn.getAttribute('data-attr'));
+        if (!entity || !Array.isArray(entity.attributes) || !entity.attributes[ai]) return;
+        entity.attributes.splice(ai, 1);
+        markDirty();
+        renderSchemaModal();
+      });
+    });
+    el.schemaModalBody.querySelectorAll('.onto-attr-add').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const entity = entityAt(Number(btn.getAttribute('data-index')));
+        if (!entity) return;
+        if (!Array.isArray(entity.attributes)) entity.attributes = [];
+        entity.attributes.push({ attribute: 'new_attribute', attribute_data_type: 'str', optional: false });
         markDirty();
         renderSchemaModal();
       });

@@ -285,6 +285,16 @@ def session_run_dir(session: dict[str, Any]) -> Path:
     return RUNS_DIR / session_run_id(session)
 
 
+def session_completed_run_dir(session: dict[str, Any]) -> Path | None:
+    """Return the session's run dir if it holds a COMPLETED run (the solver wrote
+    ``intermediate/solver_result.json``), else None. Used to detect a follow-up
+    that should continue an existing run instead of starting a brand-new one."""
+    if not session.get("run_id"):
+        return None
+    run_dir = session_run_dir(session)
+    return run_dir if (run_dir / "intermediate" / "solver_result.json").exists() else None
+
+
 def vrun_for(run_dir: Path) -> str:
     """Virtual (root-relative) run path passed to subagents so write_file /
     execute_code / ontology tools resolve under the harness root."""
@@ -1007,6 +1017,56 @@ def _segment_message_solve(
     )
 
 
+def _segment_message_continue(
+    follow_up: str,
+    prior_answer: str,
+    upload_paths: list[str],
+    workspace_dir: str,
+    run_id: str,
+    confirmed_schema_path: str,
+    schema_outline_data: list[dict[str, Any]],
+    evidence_manifest_path: str,
+    instances_path: str,
+) -> str:
+    """Continuation segment — the user is following up on an ALREADY-COMPLETED
+    run (expand / add / refine / re-angle). Reuse the existing run's workspace
+    and let the coordinator call only the subagent(s) the request needs."""
+    payload = {
+        "question": follow_up,
+        "upload_paths": upload_paths,
+        "workspace_dir": workspace_dir,
+        "run_id": run_id,
+        "confirmed_schema_path": confirmed_schema_path,
+        "schema_outline": schema_outline_data,
+        "evidence_manifest_path": evidence_manifest_path,
+        "instances_path": instances_path,
+    }
+    return (
+        "You are CONTINUING an ontology workflow run that has ALREADY COMPLETED. "
+        "The user is following up on that finished result (their request is "
+        "below) — typically to expand it, add more, go deeper, include another "
+        "facet, or re-organize/re-angle it. This is NOT a brand-new run: reuse "
+        "the existing run's workspace, schema, evidence manifest, and instances "
+        "at the paths in the inputs below. Do NOT restart from Step 1 and do NOT "
+        "answer from memory.\n\n"
+        "Follow your 'Handling other / follow-up needs' instructions: compare "
+        "what the user now wants against what the run already produced, then "
+        "delegate to the MINIMAL set of subagents that closes the gap, in "
+        "dependency order — `evidence_collector` for more raw evidence, "
+        "`schema_builder` (PATCH mode) then `schema_judger` if the schema cannot "
+        "represent the new ask, `data_extractor` to extend the structured data, "
+        "and/or `workspace_solver` to (re)compute. Always finish by having "
+        "`workspace_solver` write "
+        f"`{workspace_dir}/intermediate/solver_result.json`, then answer the user "
+        "in concise Chinese grounded in the workspace data — never fabricate the "
+        "added content from memory.\n\n"
+        f"The user's follow-up request:\n{follow_up}\n\n"
+        f"Your previous answer to them:\n{prior_answer or '(unavailable)'}\n\n"
+        + _inputs_block(payload)
+        + f"\n\n{USER_VISIBLE_OUTPUT_CONTRACT}"
+    )
+
+
 def extract_clarification(text: str) -> dict[str, Any] | None:
     """Pull a structured {problem, steps} out of a clarification reply."""
     try:
@@ -1266,6 +1326,37 @@ def run_segment_solve(
     return _drive_coordinator(message, thread_id, run_dir, emit)
 
 
+def run_segment_continue(
+    follow_up: str, prior_answer: str, upload_paths: list[str], thread_id: str, run_dir: Path, emit
+) -> str:
+    """Continuation: reuse a completed run's workspace; the coordinator picks the
+    minimal subagent(s), re-solves, and answers."""
+    vrun = vrun_for(run_dir)
+    confirmed = run_dir / "concepts" / "confirmed_schema.py"
+    try:
+        outline = schema_outline(str(confirmed)) if confirmed.exists() else []
+    except Exception:
+        outline = []
+    # `workspace_solver` writes src/solve.py with write_file, which cannot
+    # overwrite an existing file, so clear the previous run's solver artifacts to
+    # let a re-solve write fresh (mirrors open_schema_gate clearing the schema).
+    for stale in (run_dir / "src" / "solve.py", run_dir / "intermediate" / "solver_result.json"):
+        if stale.exists():
+            stale.unlink()
+    message = _segment_message_continue(
+        follow_up,
+        prior_answer,
+        upload_paths,
+        vrun,
+        run_dir.name,
+        f"{vrun}/concepts/confirmed_schema.py",
+        outline,
+        f"{vrun}/intermediate/evidence_manifest.json",
+        f"{vrun}/data/instances.json",
+    )
+    return _drive_coordinator(message, thread_id, run_dir, emit)
+
+
 # ---------------------------------------------------------------------------
 # General conversation + gate-intent routing (keeps the architecture general)
 #
@@ -1306,12 +1397,16 @@ def _recent_dialogue(session: dict[str, Any], limit: int = 12) -> list[tuple[str
     return turns[-limit:]
 
 
-def _classify_intent(content: str, context: str, session: dict[str, Any]) -> str:
+def _classify_intent(
+    content: str, context: str, session: dict[str, Any], allow_continue: bool = False
+) -> str:
     """Classify a free-text chat message at a decision point, via the model.
 
     ``context`` is one of:
       - ``"idle"``: no gate open. Returns ``"pipeline"`` (the question needs the
         ontology schema-building workflow) or ``"general"`` (answer directly).
+        When ``allow_continue`` is set (a completed run exists for this session),
+        ``"continue"`` is also allowed (follow up on / expand the finished run).
       - ``"confirm_problem"`` / ``"confirm_schema"``: a human gate is open.
         Returns ``"confirm"``, ``"revise"``, or ``"general"``.
 
@@ -1320,7 +1415,25 @@ def _classify_intent(content: str, context: str, session: dict[str, Any]) -> str
     on an ambiguous message."""
     import traceback as _tb
 
-    if context == "idle":
+    if context == "idle" and allow_continue:
+        allowed = ("continue", "pipeline", "general")
+        guide = (
+            "The user just sent a new message and no confirmation gate is open. A "
+            "previous structured run for this session has ALREADY COMPLETED and its "
+            "result was delivered. Classify the new message:\n"
+            "- `continue`: the user is following up on that just-completed result "
+            "to expand it, add more, go deeper, include another facet, or "
+            "re-organize/re-angle it, on the SAME overall subject (e.g. "
+            "'\u8fd8\u4e0d\u591f\uff0c\u591a\u6269\u5145\u4e00\u70b9\u5b66\u672f\u8bba\u6587\u76f8\u5173\u7684\u5185\u5bb9', '\u518d\u591a\u5217\u4e00\u4e9b\u4ed6\u7684\u8bba\u6587', "
+            "'\u4e5f\u628a\u4ed6\u7684\u4e13\u5229\u4fe1\u606f\u52a0\u8fdb\u53bb', '\u628a\u7b54\u6848\u6309\u65f6\u95f4\u7ebf\u91cd\u65b0\u6574\u7406'). Reuse the "
+            "existing run and its data.\n"
+            "- `pipeline`: the user starts a DIFFERENT structured task on a new "
+            "subject that needs its own evidence/schema/extraction — not a "
+            "continuation of the previous result.\n"
+            "- `general`: greetings, chit-chat, opinions, definitions, "
+            "explanations, or coding/math help that needs no workspace data."
+        )
+    elif context == "idle":
         allowed = ("pipeline", "general")
         guide = (
             "The user just sent a new message and no confirmation gate is open. "
@@ -1830,9 +1943,21 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
         return
 
     # ---- No gate open: the model decides whether this needs the structured
-    # ontology pipeline or is ordinary conversation to answer directly. ----
+    # ontology pipeline, is a follow-up that should CONTINUE the completed run,
+    # or is ordinary conversation to answer directly. ----
     upload_names = [Path(str(item)).name for item in upload_ids if str(item).strip()]
-    intent = _classify_intent(content, "idle", session)
+    # A continuation only makes sense when a previous run finished and the user
+    # is not attaching new files (new uploads mean fresh source material).
+    completed_run = session_completed_run_dir(session)
+    allow_continue = completed_run is not None and not upload_names
+    intent = _classify_intent(content, "idle", session, allow_continue=allow_continue)
+    if intent == "continue" and allow_continue:
+        user_message = ui_message("user", content)
+        session["messages"].append(user_message)
+        STORE.save(session)
+        await websocket.send_text(json.dumps({"type": "message", "message": user_message}, ensure_ascii=False))
+        await handle_continue(websocket, session_id, content)
+        return
     if intent == "general" and not upload_names:
         user_message = ui_message("user", content)
         session["messages"].append(user_message)
@@ -1864,6 +1989,37 @@ async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids:
 
     async def on_done(sid: str, final: str) -> str | None:
         return await _finalize_problem_gate(websocket, sid, final)
+
+    await _stream_run(websocket, session_id, runner, on_done)
+
+
+async def handle_continue(websocket: Any, session_id: str, content: str) -> None:
+    """A follow-up on an ALREADY-COMPLETED run: reuse the existing run's
+    workspace and let the coordinator call only the subagent(s) the request
+    needs (gather more evidence, patch the schema, extend the data, and/or
+    re-solve), then answer. We neither reset the stages nor create a new run —
+    this is the non-rigid path for 'supplement / expand / re-angle' follow-ups.
+    The caller has already echoed the user's message."""
+    session = STORE.get(session_id)
+    run_id = session.get("run_id", "")
+    if not run_id:
+        return
+    run_dir = RUNS_DIR / run_id
+    prior_answer = ""
+    for message in reversed(session.get("messages", [])):
+        if message.get("role") == "assistant" and message.get("content"):
+            prior_answer = str(message["content"]).strip()
+            break
+    paths = resolve_upload_paths(session_id, session, [])
+    await _emit_run_start(websocket, session_id, "Continuing on your existing result…")
+
+    def runner(emit) -> str:
+        return run_segment_continue(
+            content, prior_answer, paths, f"{run_id}:{AGENT_ID}:continue", run_dir, emit
+        )
+
+    async def on_done(sid: str, final: str) -> str | None:
+        return await _finalize_answer(websocket, sid, final)
 
     await _stream_run(websocket, session_id, runner, on_done)
 
