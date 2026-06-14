@@ -1458,7 +1458,7 @@ async def handle_confirm_problem(
     session["clarification"] = {"problem": problem, "steps": steps, "status": "confirmed"}
     set_stage(session, "confirm_problem", "done")
     paths = resolve_upload_paths(session_id, session, [])
-    confirm_message = ui_message("user", "已确认问题与求解步骤，请继续。")
+    confirm_message = ui_message("user", "Confirmed the problem and solution steps. Please continue.")
     session["messages"].append(confirm_message)
     STORE.save(session)
     await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
@@ -1493,7 +1493,7 @@ async def handle_confirm_schema(websocket: Any, session_id: str) -> None:
                 break
     set_stage(session, "confirm_schema", "done")
     paths = resolve_upload_paths(session_id, session, [])
-    confirm_message = ui_message("user", "已确认 Schema，请继续求解。")
+    confirm_message = ui_message("user", "Confirmed the schema. Please continue solving.")
     session["messages"].append(confirm_message)
     STORE.save(session)
     await websocket.send_text(json.dumps({"type": "message", "message": confirm_message}, ensure_ascii=False))
@@ -1529,7 +1529,7 @@ async def _finalize_problem_gate(websocket: Any, session_id: str, final: str) ->
     session["clarification"] = {**clarification, "status": "waiting"}
     message = ui_message(
         "assistant",
-        "我已澄清问题并拟定了求解步骤，请确认或修改后继续。",
+        "I've clarified the problem and drafted the solution steps. Confirm or edit them to continue.",
         clarification=clarification,
         waiting="confirm_problem",
     )
@@ -1562,7 +1562,8 @@ async def _finalize_schema_gate(websocket: Any, session_id: str, final: str) -> 
     # The markers below let the frontend render the editable schema-review card.
     message = ui_message(
         "assistant",
-        "我已根据证据构建好本体 Schema，请在下方查看并确认；如需调整可打开 Schema Studio 编辑后再确认。\n\n"
+        "I've built the ontology schema from the evidence. Review and confirm it below; "
+        "open Schema Studio to edit before confirming if needed.\n\n"
         "**Entity Definitions**\n\n**Relation Schema**",
         waiting="confirm_schema",
     )

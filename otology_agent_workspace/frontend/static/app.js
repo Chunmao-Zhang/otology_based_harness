@@ -94,24 +94,24 @@
   // per-step cards, and every step card is badged with the subagent that owns
   // it — so a viewer can always see which agent is doing which task.
   const COORDINATOR_LANE = '__coordinator__';
-  const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', cn: '主控 Agent', icon: '◉' };
+  const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', icon: '◉' };
   const SUBAGENT_ORDER = ['clarify', 'evidence', 'schema_build', 'schema_judge', 'extract', 'solve'];
   const STAGE_AGENTS = {
-    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', cn: '问题澄清', icon: '◇' },
-    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', cn: '证据采集', icon: '◈' },
-    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    cn: 'Schema 构建', icon: '▦' },
-    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     cn: 'Schema 评审', icon: '§' },
-    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    cn: '数据抽取',   icon: '⛏' },
-    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  cn: '代码求解',   icon: 'ƒ' },
+    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', icon: '◇' },
+    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', icon: '◈' },
+    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    icon: '▦' },
+    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     icon: '§' },
+    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    icon: '⛏' },
+    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  icon: 'ƒ' },
   };
   function stageAgent(stageId) {
-    return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', cn: '', icon: '●' };
+    return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', icon: '●' };
   }
   function agentBadgeHtml(stageId) {
     const a = stageAgent(stageId);
     return `<span class="agent-badge subagent" title="Subagent · ${escapeHtml(a.label)}">
         <span class="agent-badge-glyph">${escapeHtml(a.icon)}</span>
-        <span class="agent-badge-text"><span class="agent-badge-kind">子Agent</span><span class="agent-badge-name">${escapeHtml(a.label)}</span></span>
+        <span class="agent-badge-text"><span class="agent-badge-kind">Subagent</span><span class="agent-badge-name">${escapeHtml(a.label)}</span></span>
       </span>`;
   }
   function coordinatorChipRow() {
@@ -135,25 +135,25 @@
     const activeAgent = active ? stageAgent(active) : null;
     const orchestrating = isLatest && state.running;
     const subtitle = orchestrating
-      ? (activeAgent ? `正在委派 → 子Agent「${activeAgent.label}」` : '正在编排工作流…')
-      : '已完成全流程编排';
+      ? (activeAgent ? `Delegating → ${activeAgent.label}` : 'Orchestrating the workflow…')
+      : 'Orchestration complete';
     const narration = (live.output || live.thinking || '').trim();
     const narrHtml = (orchestrating && narration)
-      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">主控决策</span><div class="coordinator-narration-body">${formatMarkdown(narration)}</div></div>`
+      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">Coordinator decision</span><div class="coordinator-narration-body">${formatMarkdown(narration)}</div></div>`
       : '';
     return `
       <div class="coordinator-banner${orchestrating ? ' active' : ''}">
         <div class="coordinator-head">
           <div class="coordinator-avatar">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
           <div class="coordinator-meta">
+            <span class="coordinator-kind">Lead Agent</span>
             <div class="coordinator-title">
-              <span class="coordinator-kind">主控 Agent</span>
               <span class="coordinator-name">Coordinator</span>
               ${orchestrating ? '<span class="coordinator-live-dot" title="Orchestrating"></span>' : '<span class="run-check">✓</span>'}
             </div>
             <div class="coordinator-subtitle">${escapeHtml(subtitle)}</div>
           </div>
-          <div class="coordinator-tag">deepseek-v4-flash · task()</div>
+          <div class="coordinator-tag">deepseek-v4-flash</div>
         </div>
         ${coordinatorChipRow()}
         ${narrHtml}
@@ -478,7 +478,7 @@
         if (!narrEl) {
           narrEl = document.createElement('div');
           narrEl.className = 'coordinator-narration';
-          narrEl.innerHTML = '<span class="coordinator-narration-label">主控决策</span><div class="coordinator-narration-body"></div>';
+          narrEl.innerHTML = '<span class="coordinator-narration-label">Coordinator decision</span><div class="coordinator-narration-body"></div>';
           banner.appendChild(narrEl);
         }
         const body = narrEl.querySelector('.coordinator-narration-body') || narrEl;
@@ -908,11 +908,7 @@
           <span class="schema-review-status ${view.statusClass}">${escapeHtml(view.statusLabel)}</span>
         </div>
         <p class="schema-review-copy">${escapeHtml(view.copy)}</p>
-        <div class="schema-download-row">
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
-        </div>
+        ${schemaDownloadRow(false)}
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
@@ -1204,7 +1200,7 @@
         </section>
       `;
     }
-    const workingLabel = isWaiting ? '等待确认' : `${escapeHtml(stageAgent(card.id).label)} 执行中`;
+    const workingLabel = isWaiting ? 'Waiting for confirmation' : `${escapeHtml(stageAgent(card.id).label)} running`;
     return `
       <section class="task-node ${escapeHtml(status)} expanded" data-stage="${escapeHtml(card.id)}">
         <div class="run-card ontology-task-card working">
@@ -1257,8 +1253,11 @@
       }
       return '';
     }
-    // The current run stays fully expanded with the live tool bar.
-    if (isLatest) {
+    // The current run stays fully expanded with the live tool bar — but only
+    // while it is actually running. Once the run finishes (the final answer is
+    // in), the latest group collapses to the same slim timeline as earlier
+    // groups so the last round of tool calls no longer stays expanded.
+    if (isLatest && state.running) {
       return `
         <article class="message event stage-pipeline-message orchestration">
           ${coordinatorBannerHtml(true)}
@@ -1278,7 +1277,7 @@
       <div class="stage-group-bar-head">
         <span class="stage-group-summary-title">
           <span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span>
-          <span class="run-check">✓</span> 已编排 ${cards.length} ${stepWord}
+          <span class="run-check">✓</span> Orchestrated ${cards.length} ${stepWord}
         </span>
         <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
       </div>
@@ -1492,7 +1491,7 @@
           <article class="message assistant">
             <div class="avatar coordinator-answer-avatar" title="Coordinator">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
             <div class="bubble">
-              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>主控 Agent</span><span class="coordinator-answer-note">综合各子Agent结果给出最终答案</span></div>
+              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span><span class="coordinator-answer-note">Final answer synthesized from all subagent results</span></div>
               ${renderAssistantContent(message)}
             </div>
           </article>
@@ -1638,6 +1637,56 @@
     if (el.uploadMetric) el.uploadMetric.textContent = `${state.uploads.length} uploaded file(s)`;
   }
 
+  const PANEL_INTROS = {
+    evidence: {
+      icon: '◈',
+      kicker: 'Files & Evidence',
+      title: 'Evidence for grounding',
+      desc: 'Upload CSV / TXT / MD files and review the evidence manifest the agent collected. Everything the schema and answers are built from lives here.',
+    },
+    schema: {
+      icon: '▦',
+      kicker: 'Schema Studio',
+      title: 'Your ontology schema',
+      desc: 'Review the entities and relations the agent built, edit the draft, and download the schema or tables. The confirmed schema drives extraction and solving.',
+    },
+    progress: {
+      icon: '◎',
+      kicker: 'Run & Results',
+      title: 'Pipeline progress',
+      desc: 'Track the eight-stage ontology QA pipeline — from clarifying your question to the final grounded answer.',
+    },
+  };
+
+  function panelIntro(tab) {
+    const intro = PANEL_INTROS[tab];
+    if (!intro) return '';
+    return `
+      <div class="panel-intro">
+        <span class="panel-intro-icon" aria-hidden="true">${intro.icon}</span>
+        <div class="panel-intro-text">
+          <span class="panel-intro-kicker">${escapeHtml(intro.kicker)}</span>
+          <h2 class="panel-intro-title">${escapeHtml(intro.title)}</h2>
+          <p class="panel-intro-desc">${escapeHtml(intro.desc)}</p>
+        </div>
+      </div>`;
+  }
+
+  function schemaDownloadRow(compact) {
+    const sid = encodeURIComponent(state.sessionId);
+    const pill = (kind, name, sub) => `
+      <a class="download-pill ${kind}" href="/api/schema/download?session_id=${sid}&kind=${kind}" target="_blank" rel="noopener" download>
+        <span class="dl-text"><span class="dl-name">${name}</span><small>${sub}</small></span>
+      </a>`;
+    return `
+      <div class="schema-download-row${compact ? ' compact' : ''}" role="group" aria-label="Download the schema">
+        <span class="download-label">Downloads</span>
+        ${pill('python', 'Python schema', '.py source')}
+        ${pill('entities', 'Entity table', '.csv')}
+        ${pill('relations', 'Relation table', '.csv')}
+      </div>`;
+  }
+
   async function renderEvidenceTab() {
     let evidence = { sources: [], needs_web_search: false };
     try { evidence = await api(withSession('/api/evidence')); } catch (err) { /* ignore */ }
@@ -1676,6 +1725,7 @@
       `
       : emptyManifest;
     el.evidenceContent.innerHTML = `
+      ${panelIntro('evidence')}
       <div class="onto-section">
         <div class="onto-section-head">
           <h3>Uploaded Files</h3>
@@ -1742,6 +1792,7 @@
     const schema = state.schema;
     if (!schema || schema.status === 'none' || !schema.schema_text) {
       el.schemaContent.innerHTML = `
+        ${panelIntro('schema')}
         <div class="onto-section">
           <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge('none')}</div>
           <div class="onto-empty">No schema yet. Ask a question and confirm it, and the agent will build a draft schema here for you to review, edit and confirm.</div>
@@ -1776,14 +1827,11 @@
       `;
     }).join('');
     el.schemaContent.innerHTML = `
+      ${panelIntro('schema')}
       <div class="onto-section">
         <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
         <p class="onto-section-hint">${schema.status === 'draft' ? 'Draft schema is shown here for read-only review. Use Open Schema Studio in the confirmation card to edit it.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
-        <div class="schema-download-row compact">
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
-        </div>
+          ${schemaDownloadRow(true)}
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
           <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
@@ -1849,11 +1897,7 @@
             <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
             <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
           </table></div>
-          <div class="schema-download-row compact">
-            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
-            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
-            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
-          </div>
+          ${schemaDownloadRow(true)}
           ${editable ? `
             <div class="onto-schema-actions">
               <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
@@ -1970,6 +2014,7 @@
         `).join('')
       : '<div class="onto-empty">No runs yet. Send a question to see pipeline progress here.</div>';
     el.progressContent.innerHTML = `
+      ${panelIntro('progress')}
       <div class="onto-section">
         <div class="onto-section-head"><h3>Pipeline Progress</h3></div>
         <p class="onto-section-hint">This view only tracks the eight main ontology QA stages.</p>
