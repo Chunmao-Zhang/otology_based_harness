@@ -244,8 +244,11 @@ def check_evidence_retriever() -> None:
 def check_schema_service() -> None:
     schema_path = SCHEMA_UTILS / "valid_company_schema.py"
     form = schema_to_form(schema_path=schema_path)
-    assert any(item.get("type") == "entity" and item.get("name") == "Company" for item in form)
-    assert any(item.get("type") == "relation" and item.get("relation") == "operates_in_industry" for item in form)
+    assert any(item.get("type") == "entity" and item.get("entity_type") == "Company" for item in form)
+    assert any(
+        item.get("type") == "relation" and item.get("relation_type") == "operates_in_industry"
+        for item in form
+    )
     confirmed = confirm_schema(schema_path, RUN_DIR / "concepts" / "confirmed_schema.py")
     assert confirmed["valid"] is True
     parsed = parse_schema((RUN_DIR / "concepts" / "confirmed_schema.py").read_text(encoding="utf-8"))
@@ -278,37 +281,44 @@ def check_data_workspace_solver_files() -> None:
     if not schema_path.exists():
         confirm_schema(SCHEMA_UTILS / "valid_company_schema.py", schema_path)
 
-    # schema_outline exposes the exact class/field names the extractor must use.
+    # schema_outline exposes the exact entity_type/attribute/relation names.
     outline = schema_outline(schema_path)
-    concepts = {entry["concept"] for entry in outline}
-    assert {"Company", "Industry"} <= concepts, outline
+    entity_types = {entry["entity_type"] for entry in outline["entity_types"]}
+    assert {"Company", "Industry"} <= entity_types, outline
 
-    # Instances the data_extractor agent would write, keyed by schema class names.
+    # The two-section instances object the data_extractor agent would write.
     instances = {
-        "Company": [
-            {"_id": "palantir", "name": "Palantir", "country": "United States",
-             "operates_in_industry": ["data_analytics"], "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        "entities": [
+            {"entity_name": "Palantir", "entity_type": "Company",
+             "attributes": {"name": "Palantir", "country": "United States"},
+             "source_refs": ["company_sample.csv"], "confidence": 0.9},
+            {"entity_name": "Data Analytics", "entity_type": "Industry",
+             "attributes": {"name": "Data Analytics"},
+             "source_refs": ["company_sample.csv"], "confidence": 0.9},
         ],
-        "Industry": [
-            {"_id": "data_analytics", "name": "Data Analytics", "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        "relations": [
+            {"head_entity_name": "Palantir", "head_entity_type": "Company",
+             "relation_type": "operates_in_industry",
+             "tail_entity_name": "Data Analytics", "tail_entity_type": "Industry",
+             "source_refs": ["company_sample.csv"], "confidence": 0.9},
         ],
     }
 
     # validate_instances must accept schema-conformant data and reject drift.
     assert validate_instances(instances, schema_path)["ok"], validate_instances(instances, schema_path)
-    drifted = {"Organization": [{"_id": "x", "name": "X"}]}
+    drifted = {"entities": [{"entity_name": "x", "entity_type": "Organization", "attributes": {}}], "relations": []}
     assert validate_instances(drifted, schema_path)["ok"] is False
 
     extracted = persist_extraction(instances, schema_path, RUN_DIR)
     assert extracted["ok"], extracted
 
-    ids = {item["_id"] for rows in instances.values() for item in rows}
+    entity_names = {ent["entity_name"] for ent in instances["entities"]}
     with open(extracted["relations_path"], "r", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert rows, "expected at least one relation row"
     for row in rows:
-        assert row["subject"] in ids
-        assert row["object"] in ids
+        assert row["head_entity_name"] in entity_names
+        assert row["tail_entity_name"] in entity_names
 
     manifest = build_workspace(
         RUN_DIR,
@@ -326,7 +336,8 @@ def check_data_workspace_solver_files() -> None:
     assert spec.loader is not None
     spec.loader.exec_module(module)
     summary = module.summarize_instances(module.load_instances(RUN_DIR))
-    assert summary["Company"] >= 1
+    assert summary["entities"] >= 1
+    assert summary["entities_by_type"].get("Company", 0) >= 1
 
     # solver backend only reads back the agent-written solver_result.json.
     missing_dir = ONTOLOGY_RUNS / "contract_no_solver"
@@ -396,14 +407,22 @@ def check_new_workspace_tools() -> None:
     if tool_run.exists():
         shutil.rmtree(tool_run)
 
-    # The data_extractor agent writes instances.json; the backend persists facts/relations.
+    # The data_extractor agent writes the two-section instances.json; the backend
+    # persists facts/relations from it.
     instances = {
-        "Company": [
-            {"_id": "palantir", "name": "Palantir", "country": "United States",
-             "operates_in_industry": ["data_analytics"], "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        "entities": [
+            {"entity_name": "Palantir", "entity_type": "Company",
+             "attributes": {"name": "Palantir", "country": "United States"},
+             "source_refs": ["company_sample.csv"], "confidence": 0.9},
+            {"entity_name": "Data Analytics", "entity_type": "Industry",
+             "attributes": {"name": "Data Analytics"},
+             "source_refs": ["company_sample.csv"], "confidence": 0.9},
         ],
-        "Industry": [
-            {"_id": "data_analytics", "name": "Data Analytics", "source_refs": ["company_sample.csv"], "confidence": 0.9},
+        "relations": [
+            {"head_entity_name": "Palantir", "head_entity_type": "Company",
+             "relation_type": "operates_in_industry",
+             "tail_entity_name": "Data Analytics", "tail_entity_type": "Industry",
+             "source_refs": ["company_sample.csv"], "confidence": 0.9},
         ],
     }
     extracted = persist_extraction(instances, confirmed_path, tool_run)

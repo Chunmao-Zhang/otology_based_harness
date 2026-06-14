@@ -68,7 +68,7 @@ It records a `schema_plan`, then calls `save_evidence_manifest` and returns `{ "
 { "question": "<problem>", "evidence_manifest_path": "<manifest_path>" }
 ```
 
-It builds the schema following the manifest's `schema_plan`, validates it, calls `save_schema` (which persists `concepts/confirmed_schema.py` and builds the workspace), and returns `{ "confirmed_schema_path": "...", "schema_outline": [...], "valid": true }`. Keep `confirmed_schema_path` and `schema_outline`.
+It builds the schema following the manifest's `schema_plan`, validates it, calls `save_schema` (which persists `concepts/confirmed_schema.py` and builds the workspace), and returns `{ "confirmed_schema_path": "...", "schema_outline": {...}, "valid": true }`. Keep `confirmed_schema_path` and the `schema_outline` object (thread it through verbatim as opaque JSON; do not edit it).
 
 ### Step 4 — Judge the schema
 
@@ -89,12 +89,12 @@ It returns `{ "answerable": ..., "coverage_score": ..., "missing_requirements": 
   "question": "<problem>",
   "schema_path": "<confirmed_schema_path>",
   "instances_path": "<workspace_dir>/data/instances.json",
-  "schema_outline": [ ... from Step 3 ... ],
+  "schema_outline": <schema_outline object from Step 3, verbatim>,
   "evidence_manifest_path": "<manifest_path>"
 }
 ```
 
-It writes `data/instances.json` using the `schema_outline` class/field names verbatim, then calls `build_dataset` to validate and derive `facts.csv` / `relations.csv` / `extraction_report.json`. It returns instance counts and the `build_dataset` report. If `build_dataset` reports the instances do not conform, the extractor fixes them and re-runs `build_dataset` itself.
+It writes the two-section `data/instances.json` (an `entities` list + a `relations` list) using the `schema_outline` entity_type/attribute/relation_type names verbatim, then calls `build_dataset` to validate and derive `facts.csv` / `relations.csv` / `extraction_report.json`. It returns instance counts and the `build_dataset` report. If `build_dataset` reports the instances do not conform, the extractor fixes them and re-runs `build_dataset` itself.
 
 ### Step 6 — Solve
 

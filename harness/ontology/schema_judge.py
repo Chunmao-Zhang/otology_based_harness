@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from harness.ontology.schema_utils import parse_schema, read_schema_text
+from harness.ontology.schema_utils import parse_schema, read_schema_text, relation_fields
 
 
 def mechanical_schema_check(
@@ -22,9 +22,7 @@ def mechanical_schema_check(
     text = read_schema_text(schema_text=schema_text, schema_path=schema_path)
     parsed = parse_schema(text)
     entity_names = [c.name for c in parsed.classes]
-    relation_count = sum(
-        1 for c in parsed.classes for f in c.fields if f.kind == "relation" and not f.reverse
-    )
+    relation_count = sum(len(relation_fields(c)) for c in parsed.classes)
     return {
         "valid": parsed.valid,
         "errors": parsed.errors,

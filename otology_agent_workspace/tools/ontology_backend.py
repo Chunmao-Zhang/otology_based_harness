@@ -31,6 +31,7 @@ from harness.ontology.data_extractor import persist_extraction, schema_outline, 
 from harness.ontology.schema_builder import write_draft_schema
 from harness.ontology.schema_service import confirm_schema
 from harness.ontology.workspace_builder import build_workspace
+from otology_agent_workspace.utils.format_validators import INSTANCES_FORMAT_SPEC, SCHEMA_FORMAT_SPEC
 
 from .path_utils import ontology_run_dir
 
@@ -186,7 +187,7 @@ def save_schema(schema_text: str) -> str:
     result = write_draft_schema(schema_text, draft)
     if not result.get("valid"):
         return json.dumps(
-            {"ok": False, "valid": False, "errors": result.get("errors", [])},
+            {"ok": False, "valid": False, "errors": result.get("errors", []), "format": SCHEMA_FORMAT_SPEC},
             ensure_ascii=False,
         )
 
@@ -194,7 +195,7 @@ def save_schema(schema_text: str) -> str:
     conf = confirm_schema(draft, confirmed)
     if not conf.get("valid"):
         return json.dumps(
-            {"ok": False, "valid": False, "errors": conf.get("errors", [])},
+            {"ok": False, "valid": False, "errors": conf.get("errors", []), "format": SCHEMA_FORMAT_SPEC},
             ensure_ascii=False,
         )
 
@@ -224,9 +225,12 @@ def save_schema(schema_text: str) -> str:
 def get_schema_outline() -> str:
     """Return the confirmed schema's exact entity classes and field names.
 
-    Use this before writing instances.json so the top-level keys and per-instance
-    fields match the schema verbatim. Returns a JSON list like
-    [{"concept": "...", "primitive_fields": [...], "relation_fields": [{"name": "...", "target": "..."}]}].
+    Use this before writing instances.json so entity_type / attribute /
+    relation_type names match the schema verbatim. Returns
+    {"entity_types": [{"entity_type": "...", "entity_data_type": "...",
+    "attributes": [{"attribute": "...", "attribute_data_type": "..."}]}],
+    "relations": [{"head_entity_type": "...", "relation_type": "...",
+    "tail_entity_type": "..."}]}.
     """
     run = ontology_run_dir()
     confirmed = run / "concepts" / "confirmed_schema.py"
@@ -267,15 +271,23 @@ def build_dataset() -> str:
         instances = json.loads(inst_path.read_text(encoding="utf-8"))
     except Exception as exc:
         return json.dumps({"ok": False, "error": f"instances.json is not valid JSON: {exc}"}, ensure_ascii=False)
-    if not isinstance(instances, dict) or not instances:
+    if not isinstance(instances, dict) or "entities" not in instances:
         return json.dumps(
-            {"ok": False, "error": "instances.json must be a non-empty object keyed by entity class name."},
+            {
+                "ok": False,
+                "error": "instances.json must be an object with an `entities` list "
+                "and a `relations` list.",
+                "format": INSTANCES_FORMAT_SPEC,
+            },
             ensure_ascii=False,
         )
 
     validation = validate_instances(instances, confirmed)
     if not validation.get("ok"):
-        return json.dumps({"ok": False, "validation": validation}, ensure_ascii=False)
+        return json.dumps(
+            {"ok": False, "validation": validation, "format": INSTANCES_FORMAT_SPEC},
+            ensure_ascii=False,
+        )
 
     result = persist_extraction(instances, confirmed, run)
     if not result.get("ok"):

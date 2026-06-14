@@ -28,6 +28,23 @@ Return a concise answer with:
 - `write_file`
 - `execute_code`
 
+## Workspace Data Files
+
+You answer by **writing and running code** over these three files (never by
+eyeballing them or answering from memory):
+
+- `data/instances.json` — ONE object with two sections:
+  - `entities`: each `{"entity_name", "entity_type", "attributes": {...}, "source_refs", "confidence"}`.
+  - `relations`: each `{"head_entity_name", "head_entity_type", "relation_type", "tail_entity_name", "tail_entity_type", "source_refs", "confidence"}`.
+- `data/facts.csv` — columns `entity_name, entity_type, attribute, value, attribute_data_type, source_refs, confidence` (one row per attribute value).
+- `data/relations.csv` — columns `head_entity_name, head_entity_type, relation_type, tail_entity_name, tail_entity_type, source_refs, confidence` (one row per directed edge).
+
+An entity is identified by its `(entity_name, entity_type)` composite key. To
+traverse a relationship, match a relation row's head/tail `(entity_name,
+entity_type)` back to entities; there are no `_id` columns. Because each edge is
+stored once and directed, scan `relations.csv` to follow it in either direction
+(filter on `head_*` to go forward, on `tail_*` to go backward).
+
 ## Required Flow (strict, bounded)
 
 1. Write the complete analysis script to `<workspace_dir>/src/solve.py` in a
@@ -49,7 +66,8 @@ Return a concise answer with:
    - Load only the workspace data files: `data/instances.json`,
      `data/facts.csv`, `data/relations.csv`.
    - Apply every constraint in the question by traversing those structures
-     (filter rows, join on `_id`, intersect relation edges, etc.).
+     (filter rows, join entities to relation rows on the `(entity_name,
+     entity_type)` composite key, intersect relation edges, etc.).
    - Build `result` as the list of matching rows (each a dict of the fields the
      question asks to output). `answer` is a one-sentence Chinese summary.
    - End with exactly this persistence block (the keys `ok`, `answer`, `result`

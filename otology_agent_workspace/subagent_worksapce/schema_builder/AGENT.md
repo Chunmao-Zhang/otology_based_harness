@@ -37,7 +37,7 @@ Patch input may also include:
 In **patch mode** (`schema_path` is present), do not rebuild from scratch: read
 the existing schema at `schema_path` first (via `source_reader`), then apply each
 item in `missing_requirements` to that schema and re-save. `missing_requirements`
-may be a precise gap from `schema_judger` (e.g. `"forward relation Company ->
+may be a precise gap from `schema_judger` (e.g. `"relation Company ->
 InvestmentInstitution (funded_by)"`) **or** a human's natural-language change
 request (e.g. "add a field for the journal name", "make `year` an attribute, not
 a relation", "把作者拆成单独的实体"). Interpret the human's intent, apply it while
@@ -77,7 +77,7 @@ After `schema_validator` reports your `schema_text` is valid, call
 `save_schema(schema_text="<your full schema source>")` exactly once as your final
 tool call. It validates the schema, persists `concepts/draft_schema.py` and
 `concepts/confirmed_schema.py`, builds the workspace skeleton, and returns
-`{"ok": true, "confirmed_schema_path": "...", "schema_outline": [...]}`. If it
+`{"ok": true, "confirmed_schema_path": "...", "schema_outline": {...}}`. If it
 returns `"ok": false`, repair the schema from the returned `errors` and call
 `save_schema` again. Put the returned `confirmed_schema_path` and
 `schema_outline` in your output JSON. Do not write any schema file with another
@@ -86,16 +86,37 @@ tool.
 ## Schema Rules
 
 - Read the evidence manifest at `evidence_manifest_path` first. If it contains a `schema_plan` list, use it as the blueprint: create one class per `kind: "entity"` entry (with the listed fields) and one relation per `kind: "relation"` entry (head -> tail). Only add elements beyond the plan when the question clearly requires them.
-- Produce the schema as Python source returned in `schema_text`; it is the single source of truth.
+- Produce the schema as Python source returned in `schema_text`; it is the single source of truth. The file is never executed — it is only a declaration format.
 - The schema must be specific to the confirmed question. Do not emit a generic Company/Industry schema unless the question is actually about that domain.
-- Use classes with PascalCase names.
-- Add `# entity_type: <type>` comments on class lines.
-- Every class must include `_id: str` or `_id: int`.
-- Primitive fields use `str`, `int`, `float`, `bool`, or `Optional[...]`.
-- Forward relations use `List["TargetClass"]` or `Optional["TargetClass"]`.
-- Reverse relations use `List["SourceClass"]  # reverse`.
-- Always call `schema_validator` on your `schema_text` before returning.
-- If validation fails, repair once and validate again.
+- Use classes with PascalCase names; **the class name IS the `entity_type`**. Do NOT add `# entity_type:` comments — the bare class name is the type.
+- Every class declares exactly one `_id: str` or `_id: int`. This is the `entity_data_type` and lives **only in the schema** (it never appears in instances or CSVs). Use `str` unless the identifier is genuinely an integer.
+- Attributes are primitive fields typed `str` / `int` / `float` / `bool` (or `Optional[...]`). The primitive type is that attribute's `attribute_data_type`.
+- A relation is a field typed `List["TargetClass"]` whose **field name is the `relation_type`** and whose `TargetClass` is a class declared in the same schema. Relations carry **no** data type and **no** cardinality.
+- There is no reverse relation and no cardinality. Each relation is a single directed edge `head_entity_type -> relation_type -> tail_entity_type`, declared once on the head class. The solver scans `relations.csv` to traverse an edge in either direction, so you never declare a mirror/reverse field.
+- A class cannot declare the same field name twice, so one `entity_type` cannot reuse one `relation_type` for two different tail types. If you need two different targets, use two differently-named relation fields.
+- A literal value (year, count, date, rating, boolean flag) is always a primitive attribute, never a relation.
+- Always call `schema_validator` on your `schema_text` before returning. If it reports `valid: false`, read its `errors` and the `format` block it returns, repair the schema text accordingly, and validate again — repeat until it is valid. Never return an invalid schema.
+
+## Exact Schema Format
+
+Write exactly this shape (the class name is the entity_type; `_id` declares the
+entity_data_type; primitive fields are attributes; `List["X"]` fields are
+relations whose name is the relation_type):
+
+```
+from typing import List, Optional
+
+class Person:
+    _id: str                       # entity_data_type (str or int), schema only
+    name: str                      # attribute, attribute_data_type str
+    born_year: int                 # attribute, attribute_data_type int
+    works_at: List["Organization"]  # relation_type works_at -> tail Organization
+
+class Organization:
+    _id: str
+    name: str
+    founded_year: Optional[int]
+```
 
 ## Entity Decomposition Rule (critical)
 
@@ -108,9 +129,9 @@ relations — not one flat answer table.
   single class with `actor_name`, `movie_name`, `person_played` string fields is
   wrong — those are separate `Actor`, `Film`, `Person` classes connected by
   `List["..."]` relations). If the question joins different kinds of things, the
-  schema must contain a class per kind and forward relations between them.
-- **Every relation target must be a defined class.** A `List["X"]` or
-  `Optional["X"]` field is only allowed when `X` is a class you define in the same
+  schema must contain a class per kind and directed relations between them.
+- **Every relation target must be a defined class.** A `List["X"]` field is only
+  allowed when `X` is a class you define in the same
   schema. The validator rejects a relation whose target class is undefined
   (`unknown relation target`). Two valid fixes when a relation points at something
   undefined: (a) add the missing class and relate to it, or (b) if the value is
@@ -120,47 +141,46 @@ relations — not one flat answer table.
 - A literal value (year, count, date, rating, boolean flag) is always a primitive
   attribute, never a relation.
 
-## Relation Direction Rule (critical)
+## Relation Modeling Rule (critical)
 
-The backend only materializes **forward** relation edges into `relations.csv`.
-A field marked `# reverse` produces no edge by itself; it is only a mirror view
-of a forward relation declared on the other class.
+Each relation is **one directed edge** `head_entity_type -> relation_type ->
+tail_entity_type`, declared once as a `List["Tail"]` field on the head class and
+materialized as a row in `relations.csv`. There is no reverse field and no
+cardinality — the solver scans `relations.csv` and can follow any edge in either
+direction, so a single declaration is enough.
 
 - Every relationship the question needs to traverse or join on **must** be
-  declared as a forward `List["TargetClass"]` field on exactly one of the two
-  classes (its primary direction). Pick one primary direction per relationship.
-- **Never** model a required relationship using `# reverse` on both ends. If you
-  do, no edge is produced and the question becomes unanswerable.
-- A `# reverse` field is allowed only as the inverse view of a forward relation
-  that already exists on the other class — never as the only declaration of a
-  relationship.
+  declared as a `List["TargetClass"]` field on one of the two classes. Pick the
+  direction that reads naturally (e.g. `Company.investors -> InvestmentInstitution`).
+- Do **not** declare the same relationship twice (once on each class); one
+  directed edge is sufficient and the solver reads it both ways.
 
 Worked example — for "two companies funded by the same investor, one founder
-previously worked at the other company", the funding and employment edges must
-be forward:
+previously worked at the other company":
 
 ```
-class Company:  # entity_type: company
+from typing import List
+
+class Company:
     _id: str
     name: str
     sub_domain: str
     headquarters: str
-    investors: List["InvestmentInstitution"]   # forward: company -> investor (required join)
+    investors: List["InvestmentInstitution"]   # company -> investor (required join)
 
-class Person:  # entity_type: person
+class Person:
     _id: str
     name: str
-    founded_companies: List["Company"]         # forward
-    previously_worked_at: List["Company"]      # forward
+    founded_companies: List["Company"]         # person -> company
+    previously_worked_at: List["Company"]      # person -> company
 
-class InvestmentInstitution:  # entity_type: investment_institution
+class InvestmentInstitution:
     _id: str
     name: str
-    portfolio_companies: List["Company"]  # reverse   # mirror of Company.investors, optional
 ```
 
-Here `Company.investors` is forward, so the company↔investor edge is
-materialized and "common investor" is queryable.
+`Company.investors` materializes the company↔investor edge, so "common investor"
+is queryable by scanning `relations.csv`.
 
 ## Cost Rules
 

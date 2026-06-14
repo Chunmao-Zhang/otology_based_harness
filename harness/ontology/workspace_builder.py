@@ -79,9 +79,15 @@ from typing import Any
 
 @dataclass
 class {class_name}:
-    _id: str
+    """One entity of entity_type {class_name!r}.
+
+    Identified by the composite key (entity_name, entity_type); attributes map
+    declared attribute names to their values.
+    """
+
+    entity_name: str
+    entity_type: str = "{class_name}"
     attributes: dict[str, Any] = field(default_factory=dict)
-    relations: dict[str, list[str] | str | None] = field(default_factory=dict)
     source_refs: list[str] = field(default_factory=list)
     confidence: float | None = None
 '''
@@ -101,7 +107,18 @@ def load_instances(workspace_dir: str | Path = ".") -> dict:
 
 
 def summarize_instances(instances: dict) -> dict:
-    return {concept: len(items) for concept, items in instances.items()}
+    """Summarize the two-section instances object (entities[] + relations[])."""
+    entities = instances.get("entities", []) if isinstance(instances, dict) else []
+    relations = instances.get("relations", []) if isinstance(instances, dict) else []
+    entities_by_type: dict[str, int] = {}
+    for ent in entities:
+        etype = ent.get("entity_type", "") if isinstance(ent, dict) else ""
+        entities_by_type[etype] = entities_by_type.get(etype, 0) + 1
+    return {
+        "entities": len(entities),
+        "relations": len(relations),
+        "entities_by_type": entities_by_type,
+    }
 
 
 if __name__ == "__main__":

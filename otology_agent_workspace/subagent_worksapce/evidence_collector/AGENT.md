@@ -83,7 +83,7 @@ structure of the question, not a flattened answer table.
 - A single-entity, zero-relation plan is only appropriate when the question truly
   concerns one kind of thing filtered by its own attributes. If the question
   implies a join between different kinds of things, the plan must contain the
-  corresponding entities and the forward relations between them.
+  corresponding entities and the directed relations (head -> tail) between them.
 
 ## Planning Contract (`write_todos`)
 

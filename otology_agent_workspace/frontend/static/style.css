@@ -6702,6 +6702,137 @@ textarea#message-input.chat-input:focus-visible,
 .download-pill.python::after { background: linear-gradient(135deg, #2563eb, #0284c7); }
 .download-pill.entities::after { background: linear-gradient(135deg, #059669, #166534); }
 .download-pill.relations::after { background: linear-gradient(135deg, #f97316, #b45309); }
+.download-pill.facts::after { background: linear-gradient(135deg, #0ea5e9, #2563eb); }
+.download-pill.relations_data::after { background: linear-gradient(135deg, #d946ef, #7c3aed); }
+.download-pill.instances::after { background: linear-gradient(135deg, #64748b, #334155); }
+
+/* ── Schema table pills & attribute chips ─────────────────────────── */
+.onto-entity-name {
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.onto-type-pill,
+.onto-rel-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.onto-type-pill {
+  color: #1d4ed8;
+  background: color-mix(in srgb, #3b82f6 16%, transparent);
+  border: 1px solid color-mix(in srgb, #3b82f6 30%, transparent);
+}
+
+.onto-rel-pill {
+  color: #b45309;
+  background: color-mix(in srgb, #f97316 16%, transparent);
+  border: 1px solid color-mix(in srgb, #f97316 30%, transparent);
+}
+
+.onto-attr-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.onto-attr-chip {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.onto-attr-chip .ac-name {
+  padding: 1px 7px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.onto-attr-chip .ac-type {
+  padding: 1px 7px;
+  color: var(--ink-muted);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+/* ── Extracted data section (facts.csv / relations.csv) ───────────── */
+.onto-data-block {
+  margin: 8px 0 14px;
+}
+
+.onto-data-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.onto-data-head h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.onto-data-pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #fff;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.onto-data-pill.facts { background: linear-gradient(135deg, #0ea5e9, #2563eb); }
+.onto-data-pill.relations_data { background: linear-gradient(135deg, #d946ef, #7c3aed); }
+
+.onto-data-count {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-muted);
+}
+
+.onto-data-scroll {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.onto-data-table {
+  font-size: 12px;
+}
+
+.onto-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-strong);
+}
+
+.onto-data-table td {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .schema-download-row a:hover {
   transform: translateY(-1px);

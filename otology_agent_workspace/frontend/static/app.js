@@ -886,6 +886,17 @@
     };
   }
 
+  // Accessors that tolerate both the typed-triple form shape and any older
+  // cached shape (entity_type/name, entity_data_type/id_type, head_entity_type
+  // /head_entity, relation_type/relation, tail_entity_type/tail_entity).
+  function entityTypeOf(item) { return (item && (item.entity_type || item.name)) || ''; }
+  function entityDataTypeOf(item) { return (item && (item.entity_data_type || item.id_type)) || 'str'; }
+  function attrName(a) { return (a && (a.attribute || a.name)) || ''; }
+  function attrType(a) { return (a && (a.attribute_data_type || a.value_type)) || 'str'; }
+  function relHeadOf(item) { return (item && (item.head_entity_type || item.head_entity)) || ''; }
+  function relTailOf(item) { return (item && (item.tail_entity_type || item.tail_entity)) || ''; }
+  function relTypeOf(item) { return (item && (item.relation_type || item.relation)) || ''; }
+
   // Human-readable list of an entity's primitive attributes (the columns the
   // data extractor will fill). Keeps the schema cards honest: a class is never
   // just a name + type, it carries its real fields.
@@ -893,8 +904,17 @@
     const attrs = (item && item.attributes) || [];
     if (!attrs.length) return '';
     return attrs
-      .map((a) => `${a.name}${a.optional ? '?' : ''}: ${a.value_type || 'str'}`)
+      .map((a) => `${attrName(a)}${a.optional ? '?' : ''}: ${attrType(a)}`)
       .join(', ');
+  }
+
+  // Polished attribute chips for the schema tables.
+  function attributesCellHtml(item) {
+    const attrs = (item && item.attributes) || [];
+    if (!attrs.length) return '<span class="onto-muted">—</span>';
+    return '<div class="onto-attr-chips">' + attrs.map((a) =>
+      `<span class="onto-attr-chip"><span class="ac-name">${escapeHtml(attrName(a))}${a.optional ? '?' : ''}</span><span class="ac-type">${escapeHtml(attrType(a))}</span></span>`
+    ).join('') + '</div>';
   }
 
   function schemaPreviewTablesHtml() {
@@ -917,23 +937,18 @@
     }
     const entityRows = entities.map((item) => `
       <tr>
-        <td>${escapeHtml(item.name)}</td>
-        <td>${escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.id_type || item.value_type || 'str')}</td>
-        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+        <td><span class="onto-entity-name">${escapeHtml(entityTypeOf(item))}</span></td>
+        <td><span class="onto-type-pill">${escapeHtml(entityDataTypeOf(item))}</span></td>
+        <td>${attributesCellHtml(item)}</td>
       </tr>
     `).join('');
-    const relationRows = relations.map((item) => {
-      const relType = item.relation_type === 'many_to_one' ? 'many-to-one' : 'many-to-many';
-      return `
+    const relationRows = relations.map((item) => `
         <tr>
-          <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(item.relation)}</td>
-          <td>${relType}</td>
-          <td>${escapeHtml(item.tail_entity)}</td>
+          <td>${escapeHtml(relHeadOf(item))}</td>
+          <td><span class="onto-rel-pill">${escapeHtml(relTypeOf(item))}</span></td>
+          <td>${escapeHtml(relTailOf(item))}</td>
         </tr>
-      `;
-    }).join('');
+      `).join('');
     return `
       <section class="schema-review-card">
         <div class="schema-review-head">
@@ -948,13 +963,13 @@
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>ID Type</th><th>Attributes</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+            <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-            <thead><tr><th>Head Entity</th><th>Relation Name</th><th>Cardinality</th><th>Tail Entity</th></tr></thead>
-            <tbody>${relationRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+            <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th></tr></thead>
+            <tbody>${relationRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
           </table></div>
         </div>
       </section>
@@ -1747,18 +1762,31 @@
       </div>`;
   }
 
-  function schemaDownloadRow(compact) {
+  function downloadPill(kind, name, sub) {
     const sid = encodeURIComponent(state.sessionId);
-    const pill = (kind, name, sub) => `
+    return `
       <a class="download-pill ${kind}" href="/api/schema/download?session_id=${sid}&kind=${kind}" target="_blank" rel="noopener" download>
         <span class="dl-text"><span class="dl-name">${name}</span><small>${sub}</small></span>
       </a>`;
+  }
+
+  function schemaDownloadRow(compact) {
     return `
       <div class="schema-download-row${compact ? ' compact' : ''}" role="group" aria-label="Download the schema">
-        <span class="download-label">Downloads</span>
-        ${pill('python', 'Python schema', '.py source')}
-        ${pill('entities', 'Entity table', '.csv')}
-        ${pill('relations', 'Relation table', '.csv')}
+        <span class="download-label">Schema</span>
+        ${downloadPill('python', 'Python schema', '.py source')}
+        ${downloadPill('entities', 'Entity table', '.csv')}
+        ${downloadPill('relations', 'Relation table', '.csv')}
+      </div>`;
+  }
+
+  function dataDownloadRow() {
+    return `
+      <div class="schema-download-row compact" role="group" aria-label="Download the extracted data">
+        <span class="download-label">Data</span>
+        ${downloadPill('facts', 'facts.csv', 'attributes')}
+        ${downloadPill('relations_data', 'relations.csv', 'edges')}
+        ${downloadPill('instances', 'instances.json', 'raw')}
       </div>`;
   }
 
@@ -1879,23 +1907,18 @@
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
     const entityRows = entities.map((item) => `
       <tr>
-        <td>${escapeHtml(item.name)}</td>
-        <td>${escapeHtml(item.entity_type || '')}</td>
-        <td>${escapeHtml(item.id_type || item.value_type || 'str')}</td>
-        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+        <td><span class="onto-entity-name">${escapeHtml(entityTypeOf(item))}</span></td>
+        <td><span class="onto-type-pill">${escapeHtml(entityDataTypeOf(item))}</span></td>
+        <td>${attributesCellHtml(item)}</td>
       </tr>
     `).join('');
-    const relationRows = relations.map((item) => {
-      const relType = item.relation_type === 'many_to_one' ? 'many-to-one' : 'many-to-many';
-      return `
+    const relationRows = relations.map((item) => `
         <tr>
-          <td>${escapeHtml(item.head_entity)}</td>
-          <td>${escapeHtml(item.relation)}</td>
-          <td>${relType}</td>
-          <td>${escapeHtml(item.tail_entity)}</td>
+          <td>${escapeHtml(relHeadOf(item))}</td>
+          <td><span class="onto-rel-pill">${escapeHtml(relTypeOf(item))}</span></td>
+          <td>${escapeHtml(relTailOf(item))}</td>
         </tr>
-      `;
-    }).join('');
+      `).join('');
     el.schemaContent.innerHTML = `
       ${panelIntro('schema')}
       <div class="onto-section">
@@ -1904,14 +1927,18 @@
           ${schemaDownloadRow(true)}
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>ID Type</th><th>Attributes</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+          <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
         <h4 class="onto-subhead">Relation Schema</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity</th><th>Relation Name</th><th>Cardinality</th><th>Tail Entity</th></tr></thead>
-          <tbody>${relationRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
+          <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th></tr></thead>
+          <tbody>${relationRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
         </table></div>
+      </div>
+      <div class="onto-section" id="schema-data-section">
+        <div class="onto-section-head"><h3>Extracted Data</h3></div>
+        <div class="onto-empty">Loading the generated facts &amp; relations…</div>
       </div>
       <div class="onto-section">
         <div class="onto-section-head"><h3>Python View</h3></div>
@@ -1919,6 +1946,58 @@
       </div>
     `;
     if (window.Prism) window.Prism.highlightAllUnder(el.schemaContent);
+    loadSchemaDataSection();
+  }
+
+  // Renders a generated CSV as a polished, scrollable table.
+  function dataTableHtml(title, sub, kind, data) {
+    if (!data || !data.available) {
+      return `
+        <div class="onto-data-block">
+          <div class="onto-data-head"><h4>${title}</h4><span class="onto-data-count">not generated yet</span></div>
+          <div class="onto-empty">${sub} will appear here after the agent extracts the data.</div>
+        </div>`;
+    }
+    const cols = data.columns || [];
+    const rows = data.rows || [];
+    const head = `<tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join('')}</tr>`;
+    const body = rows.length
+      ? rows.map((row) => `<tr>${cols.map((_, i) => `<td title="${escapeHtml(String(row[i] ?? ''))}">${escapeHtml(String(row[i] ?? ''))}</td>`).join('')}</tr>`).join('')
+      : `<tr><td colspan="${Math.max(cols.length, 1)}" class="onto-muted">No rows.</td></tr>`;
+    const countLabel = data.truncated
+      ? `${rows.length} of ${data.total} rows`
+      : `${data.total} row${data.total === 1 ? '' : 's'}`;
+    return `
+      <div class="onto-data-block">
+        <div class="onto-data-head">
+          <h4>${title} <span class="onto-data-pill ${kind}">${kind === 'facts' ? 'facts.csv' : 'relations.csv'}</span></h4>
+          <span class="onto-data-count">${countLabel}</span>
+        </div>
+        <div class="md-table-wrap onto-data-scroll"><table class="md-table onto-schema-table onto-data-table">
+          <thead>${head}</thead>
+          <tbody>${body}</tbody>
+        </table></div>
+      </div>`;
+  }
+
+  async function loadSchemaDataSection() {
+    const section = el.schemaContent && el.schemaContent.querySelector('#schema-data-section');
+    if (!section) return;
+    let data = null;
+    try { data = await api(withSession('/api/dataset')); } catch (err) { data = null; }
+    const facts = data && data.facts;
+    const relations = data && data.relations;
+    const hasAny = (facts && facts.available) || (relations && relations.available);
+    section.innerHTML = `
+      <div class="onto-section-head">
+        <h3>Extracted Data</h3>
+        ${hasAny ? '<span class="onto-badge confirmed">Generated</span>' : '<span class="onto-badge none">Pending</span>'}
+      </div>
+      <p class="onto-section-hint">The structured facts &amp; relations the solver reads. Download the raw CSV / JSON below.</p>
+      ${hasAny ? dataDownloadRow() : ''}
+      ${dataTableHtml('Facts', 'Entity attributes', 'facts', facts)}
+      ${dataTableHtml('Relations', 'Entity-to-entity edges', 'relations_data', relations)}
+    `;
   }
 
   function renderSchemaModal() {
@@ -1932,7 +2011,7 @@
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
     const entityOptions = (selected) => entities.map((e) => {
-      const name = e.name || '';
+      const name = entityTypeOf(e);
       return `<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`;
     }).join('');
 
@@ -1940,60 +2019,50 @@
       if (!editable) {
         return `
           <tr>
-            <td>${escapeHtml(item.name)}</td>
-            <td>${escapeHtml(item.entity_type || '')}</td>
-            <td>${escapeHtml(item.id_type || item.value_type || 'str')}</td>
-            <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+            <td><span class="onto-entity-name">${escapeHtml(entityTypeOf(item))}</span></td>
+            <td><span class="onto-type-pill">${escapeHtml(entityDataTypeOf(item))}</span></td>
+            <td>${attributesCellHtml(item)}</td>
           </tr>`;
       }
-      const idType = (item.id_type || 'str') === 'int' ? 'int' : 'str';
+      const dataType = entityDataTypeOf(item) === 'int' ? 'int' : 'str';
       return `
         <tr>
-          <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}" placeholder="EntityName"></td>
-          <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}" placeholder="type"></td>
+          <td><input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(entityTypeOf(item))}" placeholder="EntityType"></td>
           <td>
-            <select class="onto-cell-select" data-kind="entity" data-index="${index}" data-field="id_type">
-              <option value="str"${idType === 'str' ? ' selected' : ''}>str</option>
-              <option value="int"${idType === 'int' ? ' selected' : ''}>int</option>
+            <select class="onto-cell-select" data-kind="entity" data-index="${index}" data-field="entity_data_type">
+              <option value="str"${dataType === 'str' ? ' selected' : ''}>str</option>
+              <option value="int"${dataType === 'int' ? ' selected' : ''}>int</option>
             </select>
           </td>
-          <td class="onto-attr-cell">${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
+          <td class="onto-attr-cell">${attributesCellHtml(item)}</td>
           <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="entity" data-index="${index}" title="Remove entity" aria-label="Remove entity">×</button></td>
         </tr>`;
     }).join('');
 
     const relationRows = relations.map((item, index) => {
-      const relType = item.relation_type === 'many_to_one' ? 'many_to_one' : 'many_to_many';
       if (!editable) {
         return `
           <tr>
-            <td>${escapeHtml(item.head_entity)}</td>
-            <td>${escapeHtml(item.relation)}</td>
-            <td>${relType === 'many_to_one' ? 'many-to-one' : 'many-to-many'}</td>
-            <td>${escapeHtml(item.tail_entity)}</td>
+            <td>${escapeHtml(relHeadOf(item))}</td>
+            <td><span class="onto-rel-pill">${escapeHtml(relTypeOf(item))}</span></td>
+            <td>${escapeHtml(relTailOf(item))}</td>
           </tr>`;
       }
       return `
         <tr>
           <td>
-            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="head_entity">${entityOptions(item.head_entity)}</select>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="head_entity_type">${entityOptions(relHeadOf(item))}</select>
           </td>
-          <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation" value="${escapeHtml(item.relation)}" placeholder="relation_name"></td>
+          <td><input class="onto-cell-input" data-kind="relation" data-index="${index}" data-field="relation_type" value="${escapeHtml(relTypeOf(item))}" placeholder="relation_type"></td>
           <td>
-            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="relation_type">
-              <option value="many_to_many"${relType === 'many_to_many' ? ' selected' : ''}>many-to-many (List)</option>
-              <option value="many_to_one"${relType === 'many_to_one' ? ' selected' : ''}>many-to-one (Optional)</option>
-            </select>
-          </td>
-          <td>
-            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="tail_entity">${entityOptions(item.tail_entity)}</select>
+            <select class="onto-cell-select" data-kind="relation" data-index="${index}" data-field="tail_entity_type">${entityOptions(relTailOf(item))}</select>
           </td>
           <td class="onto-row-action"><button type="button" class="onto-row-del" data-kind="relation" data-index="${index}" title="Remove relation" aria-label="Remove relation">×</button></td>
         </tr>`;
     }).join('');
 
-    const entityCols = editable ? 5 : 4;
-    const relationCols = editable ? 5 : 4;
+    const entityCols = editable ? 4 : 3;
+    const relationCols = editable ? 4 : 3;
     const modeTabs = editable ? `
       <div class="schema-edit-modes" role="tablist" aria-label="Schema editing mode">
         <button type="button" class="schema-mode-btn${mode === 'table' ? ' active' : ''}" data-mode="table" role="tab" aria-selected="${mode === 'table'}">Edit tables</button>
@@ -2001,18 +2070,18 @@
       </div>` : '';
 
     const tableBody = `
-      <div class="schema-edit-hint">${editable ? 'Editable — click any cell to change it, use the dropdowns for entities and cardinality, then <strong>Apply changes</strong>.' : 'This schema is confirmed and read-only.'}</div>
+      <div class="schema-edit-hint">${editable ? 'Editable — edit the entity type, pick the entity data type, set relation endpoints with the dropdowns, then <strong>Apply changes</strong>.' : 'This schema is confirmed and read-only.'}</div>
       <div class="onto-table-block">
         <div class="onto-table-head"><h4>Entity Definitions</h4>${editable ? '<button type="button" class="onto-add-row" data-add="entity">+ Add entity</button>' : ''}</div>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>ID Type</th><th>Attributes</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <thead><tr><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
           <tbody>${entityRows || `<tr><td colspan="${entityCols}" class="onto-muted">No entities yet.</td></tr>`}</tbody>
         </table></div>
       </div>
       <div class="onto-table-block">
         <div class="onto-table-head"><h4>Relation Schema</h4>${editable ? '<button type="button" class="onto-add-row" data-add="relation">+ Add relation</button>' : ''}</div>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
-          <thead><tr><th>Head Entity</th><th>Relation Name</th><th>Cardinality</th><th>Tail Entity</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
+          <thead><tr><th>Head Entity Type</th><th>Relation Type</th><th>Tail Entity Type</th>${editable ? '<th aria-label="Actions"></th>' : ''}</tr></thead>
           <tbody>${relationRows || `<tr><td colspan="${relationCols}" class="onto-muted">No relations yet.</td></tr>`}</tbody>
         </table></div>
       </div>
@@ -2085,7 +2154,8 @@
       });
     });
 
-    // Text cell edits (entity name/entity_type, relation name)
+    // Text cell edits (entity type, relation type). The class name IS the
+    // entity_type, so renaming an entity cascades to relation endpoints.
     el.schemaModalBody.querySelectorAll('.onto-cell-input').forEach((input) => {
       input.addEventListener('input', () => {
         const kind = input.getAttribute('data-kind');
@@ -2093,13 +2163,14 @@
         const field = input.getAttribute('data-field');
         const items = state.schemaForm.filter((item) => item.type === kind);
         if (!items[index]) return;
-        if (kind === 'entity' && field === 'name') {
-          const oldName = items[index].name;
+        if (kind === 'entity' && field === 'entity_type') {
+          const oldName = entityTypeOf(items[index]);
+          items[index].entity_type = input.value;
           items[index].name = input.value;
           state.schemaForm.forEach((item) => {
             if (item.type === 'relation') {
-              if (item.head_entity === oldName) item.head_entity = input.value;
-              if (item.tail_entity === oldName) item.tail_entity = input.value;
+              if (relHeadOf(item) === oldName) item.head_entity_type = input.value;
+              if (relTailOf(item) === oldName) item.tail_entity_type = input.value;
             }
           });
         } else {
@@ -2108,12 +2179,12 @@
         markDirty();
       });
       // Renaming an entity changes the dropdown options elsewhere; refresh on blur.
-      if (input.getAttribute('data-kind') === 'entity' && input.getAttribute('data-field') === 'name') {
+      if (input.getAttribute('data-kind') === 'entity' && input.getAttribute('data-field') === 'entity_type') {
         input.addEventListener('change', () => renderSchemaModal());
       }
     });
 
-    // Dropdown cell edits (entity id_type, relation head/tail/relation_type)
+    // Dropdown cell edits (entity_data_type, relation head/tail)
     el.schemaModalBody.querySelectorAll('.onto-cell-select').forEach((select) => {
       select.addEventListener('change', () => {
         const kind = select.getAttribute('data-kind');
@@ -2146,14 +2217,14 @@
       btn.addEventListener('click', () => {
         const what = btn.getAttribute('data-add');
         if (what === 'entity') {
-          const existing = state.schemaForm.filter((i) => i.type === 'entity').map((i) => i.name);
+          const existing = state.schemaForm.filter((i) => i.type === 'entity').map((i) => entityTypeOf(i));
           let name = 'NewEntity';
           let n = 1;
           while (existing.includes(name)) { n += 1; name = `NewEntity${n}`; }
-          state.schemaForm.push({ type: 'entity', name, entity_type: name.toLowerCase(), value_type: null, id_type: 'str', attributes: [] });
+          state.schemaForm.push({ type: 'entity', name, entity_type: name, entity_data_type: 'str', attributes: [] });
         } else if (what === 'relation') {
-          const first = (state.schemaForm.find((i) => i.type === 'entity') || {}).name || '';
-          state.schemaForm.push({ type: 'relation', head_entity: first, relation: 'new_relation', relation_type: 'many_to_many', tail_entity: first });
+          const first = entityTypeOf(state.schemaForm.find((i) => i.type === 'entity') || {});
+          state.schemaForm.push({ type: 'relation', head_entity_type: first, relation_type: 'new_relation', tail_entity_type: first });
         }
         markDirty();
         renderSchemaModal();

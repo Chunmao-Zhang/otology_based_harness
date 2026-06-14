@@ -578,8 +578,28 @@ async def download_schema_artifact(session_id: str = "", kind: str = "python"):
     )
     if run_dir is None:
         raise HTTPException(status_code=404, detail="Schema not found")
-    payload = schema_payload(run_dir)
     kind = kind.lower().strip()
+
+    # Generated dataset files derived by build_dataset (the ABox). These are the
+    # actual facts/relations the solver reads, served verbatim for download.
+    data_files = {
+        "facts": ("data/facts.csv", "facts.csv", "text/csv"),
+        "relations_data": ("data/relations.csv", "relations.csv", "text/csv"),
+        "instances": ("data/instances.json", "instances.json", "application/json"),
+    }
+    if kind in data_files:
+        relative, filename, media_type = data_files[kind]
+        target = run_dir / relative
+        if not target.exists():
+            raise HTTPException(status_code=404, detail=f"{filename} has not been generated yet")
+        return FileResponse(
+            path=target,
+            media_type=media_type,
+            filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    payload = schema_payload(run_dir)
     if kind == "python":
         filename = "ontology_schema.py"
         return Response(
@@ -589,27 +609,33 @@ async def download_schema_artifact(session_id: str = "", kind: str = "python"):
         )
     form = payload.get("form") or []
     entities = [item for item in form if item.get("type") == "entity"]
-    entity_meta = {item.get("name", ""): item for item in entities}
     if kind == "entities":
-        rows = ["Entity,Entity Type,Entity Data Type"]
-        rows.extend(
-            f'{csv_cell(item.get("name", ""))},{csv_cell(item.get("entity_type", ""))},{csv_cell(item.get("value_type", "str"))}'
-            for item in entities
-        )
+        # Entity Definitions projection: one row per attribute (glossary columns).
+        rows = ["entity_type,entity_data_type,attribute,attribute_data_type,optional"]
+        for item in entities:
+            etype = item.get("entity_type") or item.get("name", "")
+            edata = item.get("entity_data_type") or item.get("id_type") or "str"
+            attributes = item.get("attributes") or []
+            if not attributes:
+                rows.append(f'{csv_cell(etype)},{csv_cell(edata)},,,')
+                continue
+            for attr in attributes:
+                rows.append(",".join([
+                    csv_cell(etype),
+                    csv_cell(edata),
+                    csv_cell(attr.get("attribute") or attr.get("name", "")),
+                    csv_cell(attr.get("attribute_data_type") or attr.get("value_type", "str")),
+                    csv_cell("true" if attr.get("optional") else "false"),
+                ]))
         filename = "entity_definitions.csv"
     elif kind == "relations":
-        rows = ["Head Entity,Head Entity Type,Head Entity Data Type,Relation Name,Tail Entity,Tail Entity Type,Tail Entity Data Type"]
+        # Relation Schema projection: head_entity_type | relation_type | tail_entity_type.
+        rows = ["head_entity_type,relation_type,tail_entity_type"]
         for item in (entry for entry in form if entry.get("type") == "relation"):
-            head = entity_meta.get(item.get("head_entity", ""), {})
-            tail = entity_meta.get(item.get("tail_entity", ""), {})
             rows.append(",".join([
-                csv_cell(item.get("head_entity", "")),
-                csv_cell(head.get("entity_type", "")),
-                csv_cell(head.get("value_type", "str")),
-                csv_cell(item.get("relation", "")),
-                csv_cell(item.get("tail_entity", "")),
-                csv_cell(tail.get("entity_type", "")),
-                csv_cell(tail.get("value_type", "str")),
+                csv_cell(item.get("head_entity_type") or item.get("head_entity", "")),
+                csv_cell(item.get("relation_type") or item.get("relation", "")),
+                csv_cell(item.get("tail_entity_type") or item.get("tail_entity", "")),
             ]))
         filename = "relation_schema.csv"
     else:
@@ -619,6 +645,52 @@ async def download_schema_artifact(session_id: str = "", kind: str = "python"):
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _read_csv_preview(path: Path, max_rows: int = 200) -> dict[str, Any]:
+    """Parse a generated CSV into {columns, rows, total, truncated} for display."""
+    import csv as _csv
+
+    if not path.exists():
+        return {"available": False, "columns": [], "rows": [], "total": 0, "truncated": False}
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = _csv.reader(handle)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return {"available": True, "columns": [], "rows": [], "total": 0, "truncated": False}
+        rows: list[list[str]] = []
+        total = 0
+        for record in reader:
+            total += 1
+            if len(rows) < max_rows:
+                rows.append([str(cell) for cell in record])
+    return {
+        "available": True,
+        "columns": [str(col) for col in header],
+        "rows": rows,
+        "total": total,
+        "truncated": total > len(rows),
+    }
+
+
+@app.get("/api/dataset")
+async def dataset_preview(session_id: str = ""):
+    """Generated facts.csv / relations.csv contents for the Schema Studio display."""
+    run_dir = resolve_artifact_dir(session_id, "data/facts.csv") or resolve_artifact_dir(
+        session_id, "data/relations.csv"
+    )
+    if run_dir is None:
+        return {"ok": True, "run_id": "", "facts": {"available": False}, "relations": {"available": False}}
+    facts = _read_csv_preview(run_dir / "data" / "facts.csv")
+    relations = _read_csv_preview(run_dir / "data" / "relations.csv")
+    return {
+        "ok": True,
+        "run_id": run_dir.name,
+        "facts": facts,
+        "relations": relations,
+        "has_instances": (run_dir / "data" / "instances.json").exists(),
+    }
 
 
 @app.post("/api/schema/form")
