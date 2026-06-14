@@ -32,6 +32,20 @@ Return a concise answer with:
 
 1. Write the complete analysis script to `<workspace_dir>/src/solve.py` in a
    single `write_file` call. The script must:
+   - Resolve all paths from the script's own location, because `execute_code`
+     runs the file with the **working directory set to `src/`** (not the run
+     root). Begin the script with:
+
+     ```python
+     import os
+     BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # run dir
+     ```
+
+     and build every path as `os.path.join(BASE, "data/instances.json")`,
+     `os.path.join(BASE, "intermediate/solver_result.json")`, etc. Never open a
+     bare relative path like `"data/instances.json"` — from `src/` it does not
+     exist and the run will fail. Do not write throwaway scripts to probe the
+     directory; use `BASE` directly.
    - Load only the workspace data files: `data/instances.json`,
      `data/facts.csv`, `data/relations.csv`.
    - Apply every constraint in the question by traversing those structures
@@ -50,7 +64,8 @@ Return a concise answer with:
    print(json.dumps(out, ensure_ascii=False))
    ```
 
-   where `SOLVER_RESULT_PATH = "<workspace_dir>/intermediate/solver_result.json"`.
+   where `SOLVER_RESULT_PATH = os.path.join(BASE, "intermediate/solver_result.json")`
+   (using the `BASE` defined above, never a bare relative path).
 2. Execute it once with
    `execute_code(file_path="/runs/ontology_workspace_runs/<run_id>/src/solve.py", script_args="")`.
 3. If—and only if—execution raises an error, fix `solve.py` and run it one more

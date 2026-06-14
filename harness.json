@@ -2,7 +2,7 @@
   "providers": {
     "deepseek": {
       "base_url": "https://api.deepseek.com/v1",
-      "api_key": "sk-e87cbc49e7da4cb3b9f71ad1db17a12a",
+      "api_key": "${DEEPSEEK_API_KEY}",
       "models": {
         "deepseek-v4-flash": {
           "context_window": 64000,
@@ -13,7 +13,7 @@
   },
   "services": {
     "serper": {
-      "api_key": "a5699d2fdabc196a22b19853e4f69c0234d918b3",
+      "api_key": "${SERPER_API_KEY}",
       "default_num_results": 3,
       "max_results_per_call": 3,
       "max_searches_per_run": 16

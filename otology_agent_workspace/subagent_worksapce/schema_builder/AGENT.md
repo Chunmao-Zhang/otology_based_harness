@@ -87,6 +87,29 @@ tool.
 - Always call `schema_validator` on your `schema_text` before returning.
 - If validation fails, repair once and validate again.
 
+## Entity Decomposition Rule (critical)
+
+The schema is an ontology of distinct real-world entity types joined by
+relations — not one flat answer table.
+
+- **Honor the manifest's separate entities.** Each `kind: "entity"` entry in the
+  `schema_plan` is its own class. Never merge several entity types into one
+  denormalized class whose fields are just the other entities' names (e.g. a
+  single class with `actor_name`, `movie_name`, `person_played` string fields is
+  wrong — those are separate `Actor`, `Film`, `Person` classes connected by
+  `List["..."]` relations). If the question joins different kinds of things, the
+  schema must contain a class per kind and forward relations between them.
+- **Every relation target must be a defined class.** A `List["X"]` or
+  `Optional["X"]` field is only allowed when `X` is a class you define in the same
+  schema. The validator rejects a relation whose target class is undefined
+  (`unknown relation target`). Two valid fixes when a relation points at something
+  undefined: (a) add the missing class and relate to it, or (b) if the value is
+  really a literal (a year, a count, a date, a name), make it a **primitive
+  attribute** on the owning class instead of a relation. Never leave or drop a
+  dangling relation.
+- A literal value (year, count, date, rating, boolean flag) is always a primitive
+  attribute, never a relation.
+
 ## Relation Direction Rule (critical)
 
 The backend only materializes **forward** relation edges into `relations.csv`.

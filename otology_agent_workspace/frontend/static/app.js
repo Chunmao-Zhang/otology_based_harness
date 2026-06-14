@@ -77,6 +77,14 @@
     liveStream: {},
     toolKeys: {},
     runStartedAt: 0,
+    pendingOptimistic: [],
+    // WebSocket resilience: tunnels can drop a long-running socket. We auto-
+    // reconnect, and while a run is still in flight we poll history so the run's
+    // persisted progress/result is recovered even though the live stream lapsed.
+    wsConnectedOnce: false,
+    wsReconnectAttempts: 0,
+    wsReconnectTimer: null,
+    historyPollTimer: null,
   };
 
   // ── Agent identity: coordinator vs subagents ─────────────────────────────
@@ -86,24 +94,24 @@
   // per-step cards, and every step card is badged with the subagent that owns
   // it — so a viewer can always see which agent is doing which task.
   const COORDINATOR_LANE = '__coordinator__';
-  const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', cn: '主控 Agent', icon: '◉' };
+  const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', icon: '◉' };
   const SUBAGENT_ORDER = ['clarify', 'evidence', 'schema_build', 'schema_judge', 'extract', 'solve'];
   const STAGE_AGENTS = {
-    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', cn: '问题澄清', icon: '◇' },
-    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', cn: '证据采集', icon: '◈' },
-    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    cn: 'Schema 构建', icon: '▦' },
-    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     cn: 'Schema 评审', icon: '§' },
-    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    cn: '数据抽取',   icon: '⛏' },
-    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  cn: '代码求解',   icon: 'ƒ' },
+    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', icon: '◇' },
+    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', icon: '◈' },
+    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    icon: '▦' },
+    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     icon: '§' },
+    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    icon: '⛏' },
+    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  icon: 'ƒ' },
   };
   function stageAgent(stageId) {
-    return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', cn: '', icon: '●' };
+    return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', icon: '●' };
   }
   function agentBadgeHtml(stageId) {
     const a = stageAgent(stageId);
     return `<span class="agent-badge subagent" title="Subagent · ${escapeHtml(a.label)}">
         <span class="agent-badge-glyph">${escapeHtml(a.icon)}</span>
-        <span class="agent-badge-text"><span class="agent-badge-kind">子Agent</span><span class="agent-badge-name">${escapeHtml(a.label)}</span></span>
+        <span class="agent-badge-text"><span class="agent-badge-kind">Subagent</span><span class="agent-badge-name">${escapeHtml(a.label)}</span></span>
       </span>`;
   }
   function coordinatorChipRow() {
@@ -127,25 +135,25 @@
     const activeAgent = active ? stageAgent(active) : null;
     const orchestrating = isLatest && state.running;
     const subtitle = orchestrating
-      ? (activeAgent ? `正在委派 → 子Agent「${activeAgent.label}」` : '正在编排工作流…')
-      : '已完成全流程编排';
+      ? (activeAgent ? `Delegating → ${activeAgent.label}` : 'Orchestrating the workflow…')
+      : 'Orchestration complete';
     const narration = (live.output || live.thinking || '').trim();
     const narrHtml = (orchestrating && narration)
-      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">主控决策</span>${formatMarkdown(narration)}</div>`
+      ? `<div class="coordinator-narration"><span class="coordinator-narration-label">Coordinator decision</span><div class="coordinator-narration-body">${formatMarkdown(narration)}</div></div>`
       : '';
     return `
       <div class="coordinator-banner${orchestrating ? ' active' : ''}">
         <div class="coordinator-head">
           <div class="coordinator-avatar">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
           <div class="coordinator-meta">
+            <span class="coordinator-kind">Lead Agent</span>
             <div class="coordinator-title">
-              <span class="coordinator-kind">主控 Agent</span>
               <span class="coordinator-name">Coordinator</span>
               ${orchestrating ? '<span class="coordinator-live-dot" title="Orchestrating"></span>' : '<span class="run-check">✓</span>'}
             </div>
             <div class="coordinator-subtitle">${escapeHtml(subtitle)}</div>
           </div>
-          <div class="coordinator-tag">deepseek-v4-flash · task()</div>
+          <div class="coordinator-tag">deepseek-v4-flash</div>
         </div>
         ${coordinatorChipRow()}
         ${narrHtml}
@@ -359,6 +367,12 @@
   // ── Sessions & WebSocket ────────────────────────────────────────────────
 
   async function startSession(sessionId) {
+    // Switching sessions: tear down any pending reconnect/poll for the old socket
+    // and null it out so its close handler won't reconnect to the old session.
+    stopHistoryPolling();
+    if (state.wsReconnectTimer) { clearTimeout(state.wsReconnectTimer); state.wsReconnectTimer = null; }
+    state.wsConnectedOnce = false;
+    state.wsReconnectAttempts = 0;
     if (state.ws) {
       try { state.ws.close(); } catch (err) { /* ignore */ }
       state.ws = null;
@@ -395,8 +409,21 @@
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${protocol}://${window.location.host}/ws/${state.sessionId}`);
     state.ws = ws;
-    ws.addEventListener('open', () => { state.wsReady = true; });
-    ws.addEventListener('close', () => { state.wsReady = false; });
+    ws.addEventListener('open', () => {
+      state.wsReady = true;
+      state.wsReconnectAttempts = 0;
+      // On a *reconnect* (not the first connect), recover anything we missed while
+      // offline: the server replays history on connect, and if a run is still in
+      // flight we poll history until it settles (gate opens or answer arrives).
+      if (state.wsConnectedOnce && state.running) startHistoryPolling();
+      state.wsConnectedOnce = true;
+    });
+    ws.addEventListener('close', () => {
+      state.wsReady = false;
+      // Only reconnect if this is still the active socket (not one we replaced
+      // by switching sessions).
+      if (state.ws === ws) scheduleReconnect();
+    });
     ws.addEventListener('error', () => { state.wsReady = false; });
     ws.addEventListener('message', (event) => {
       let payload = null;
@@ -405,17 +432,106 @@
     });
   }
 
+  function scheduleReconnect() {
+    if (state.wsReconnectTimer) return;
+    const delay = Math.min(1000 * (2 ** (state.wsReconnectAttempts || 0)), 8000);
+    state.wsReconnectAttempts = (state.wsReconnectAttempts || 0) + 1;
+    state.wsReconnectTimer = setTimeout(() => {
+      state.wsReconnectTimer = null;
+      if (state.sessionId) connectWs();
+    }, delay);
+  }
+
+  function startHistoryPolling() {
+    if (state.historyPollTimer) return;
+    state.historyPollTimer = setInterval(() => {
+      if (!state.running) { stopHistoryPolling(); return; }
+      if (state.wsReady && state.ws) {
+        try { state.ws.send(JSON.stringify({ type: 'history' })); } catch (err) { /* ignore */ }
+      }
+    }, 4000);
+  }
+
+  function stopHistoryPolling() {
+    if (state.historyPollTimer) { clearInterval(state.historyPollTimer); state.historyPollTimer = null; }
+  }
+
+  function cssEscapeId(value) {
+    return (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+
+  // Incrementally update the live coordinator narration and the active subagent's
+  // reasoning/output panes without rebuilding the whole message tree. Returns
+  // false when the live group is not in the DOM yet so the caller can fall back
+  // to a full render. Re-rendering everything (markdown + syntax highlighting)
+  // on every streamed token is what exhausted the browser renderer on long runs.
+  function updateLiveStreamDom() {
+    const root = el.messages.querySelector('.stage-pipeline-message.orchestration');
+    if (!root) return false;
+    const live = state.liveStream || {};
+    const coord = live[COORDINATOR_LANE] || {};
+    const narration = (coord.output || coord.thinking || '').trim();
+    const banner = root.querySelector('.coordinator-banner');
+    if (banner) {
+      let narrEl = banner.querySelector('.coordinator-narration');
+      if (narration) {
+        if (!narrEl) {
+          narrEl = document.createElement('div');
+          narrEl.className = 'coordinator-narration';
+          narrEl.innerHTML = '<span class="coordinator-narration-label">Coordinator decision</span><div class="coordinator-narration-body"></div>';
+          banner.appendChild(narrEl);
+        }
+        const body = narrEl.querySelector('.coordinator-narration-body') || narrEl;
+        body.innerHTML = formatMarkdown(narration);
+      } else if (narrEl) {
+        narrEl.remove();
+      }
+    }
+    Object.keys(live).forEach((stage) => {
+      if (stage === COORDINATOR_LANE) return;
+      const node = root.querySelector(`.task-node[data-stage="${cssEscapeId(stage)}"]`);
+      if (!node) return;
+      const data = live[stage] || {};
+      const rEl = node.querySelector('.run-reasoning-output');
+      if (rEl) rEl.innerHTML = data.thinking ? escapeHtml(sanitizeDisplayText(data.thinking)) : '<span class="live-placeholder">Waiting for live model update…</span>';
+      const oEl = node.querySelector('.run-model-output');
+      if (oEl) oEl.innerHTML = data.output ? formatMarkdown(data.output) : '<span class="live-placeholder">Waiting for model output…</span>';
+    });
+    return true;
+  }
+
   function handleWsEvent(payload) {
     if (payload.type === 'history') {
       const session = payload.session || {};
       state.sessionId = session.id || state.sessionId;
       state.messages = session.messages || [];
       state.stages = session.stages || [];
+      // Recover run state after a reconnect: if no stage is still running, the
+      // segment finished (a gate opened or the answer arrived) while we were
+      // offline — settle the UI and stop polling. Otherwise keep showing work.
+      const stages = state.stages || [];
+      const anyRunning = stages.some((s) => s.status === 'running');
+      if (state.running && !anyRunning) {
+        setRunning(false);
+        stopHistoryPolling();
+      }
       renderMessages();
       renderStageStrip();
+      // Reload the schema/uploads so a recovered schema gate renders fully.
+      refreshSidebarData();
       return;
     }
     if (payload.type === 'message') {
+      // Skip the server echo of a user message we already showed optimistically,
+      // so it does not appear twice.
+      const msg = payload.message || {};
+      if (msg.role === 'user') {
+        const idx = state.pendingOptimistic.indexOf(String(msg.content || '').trim());
+        if (idx !== -1) {
+          state.pendingOptimistic.splice(idx, 1);
+          return;
+        }
+      }
       state.messages.push(payload.message);
       renderMessages();
       renderSessionRail();
@@ -425,6 +541,11 @@
       state.liveStream = {};
       state.forceScroll = true;
       setRunning(true, 'The agent is working on your request…');
+      // Render immediately so the coordinator banner shows up at once instead of
+      // leaving the user staring at a blank screen for several seconds while the
+      // main agent thinks before its first delegation.
+      renderMessages();
+      renderStageStrip();
       return;
     }
     if (payload.type === 'stage') {
@@ -450,7 +571,9 @@
           thinking: payload.thinking || '',
           output: payload.output || '',
         };
-        renderMessages({ preserveScroll: true });
+        // Targeted in-place update; only fall back to a full render if the live
+        // group is not on screen yet.
+        if (!updateLiveStreamDom()) renderMessages({ preserveScroll: true });
       }
       return;
     }
@@ -478,16 +601,16 @@
     if (payload.type === 'run_done') {
       state.liveStream = {};
       setRunning(false);
+      stopHistoryPolling();
       renderMessages();
       renderProgressTab();
     }
   }
 
-  // Anchor the live timer to when the current working segment started, then let
-  // it climb continuously until the segment ends (a confirmation gate or the
-  // final answer). The backend diagnosis showed ~97% of run time is model
-  // inference; a continuously counting timer makes long steps read as "still
-  // working" rather than "frozen".
+  // Each running step card anchors its timer to that step's own server-stamped
+  // start (`stage.started_at`), so the clock measures the current subagent's
+  // elapsed time and resets when the next subagent takes over. It falls back to
+  // the segment start only if no per-step stamp is available.
   function formatElapsed(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
     if (s < 60) return `${s}s`;
@@ -547,8 +670,8 @@
     return content;
   }
 
-  async function sendViaHttp(payload) {
-    const optimisticContent = pushOptimisticUserMessage(payload);
+  async function sendViaHttp(payload, { optimistic = true } = {}) {
+    const optimisticContent = optimistic ? pushOptimisticUserMessage(payload) : '';
     let skippedOptimisticEcho = false;
     setRunning(true, 'The agent is working on your request…');
     try {
@@ -585,6 +708,12 @@
     const uploadIds = Array.from(state.selectedUploads);
     const payload = { type: 'chat', content, upload_ids: uploadIds };
     if (state.wsReady) {
+      // Show the user's message and the working state at once — do not wait for
+      // the server to echo it back, which is what made the UI look frozen for
+      // several seconds after asking a question.
+      const content2 = pushOptimisticUserMessage(payload);
+      if (content2) state.pendingOptimistic.push(content2);
+      setRunning(true, 'The agent is working on your request…');
       state.ws.send(JSON.stringify(payload));
     } else {
       sendViaHttp(payload);
@@ -599,10 +728,14 @@
     if (state.running) return;
     const payload = { type: 'chat', content: text, upload_ids: [] };
     state.forceScroll = true;
+    // A confirmation reply: the server posts its own localized acknowledgement
+    // bubble, so don't show an optimistic one (it would duplicate). Still flip
+    // to the working state at once so the click gives immediate feedback.
     if (state.wsReady) {
+      setRunning(true, 'The agent is working on your request…');
       state.ws.send(JSON.stringify(payload));
     } else {
-      sendViaHttp(payload);
+      sendViaHttp(payload, { optimistic: false });
     }
   }
 
@@ -712,6 +845,17 @@
     };
   }
 
+  // Human-readable list of an entity's primitive attributes (the columns the
+  // data extractor will fill). Keeps the schema cards honest: a class is never
+  // just a name + type, it carries its real fields.
+  function attributesText(item) {
+    const attrs = (item && item.attributes) || [];
+    if (!attrs.length) return '';
+    return attrs
+      .map((a) => `${a.name}${a.optional ? '?' : ''}: ${a.value_type || 'str'}`)
+      .join(', ');
+  }
+
   function schemaPreviewTablesHtml() {
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
@@ -736,6 +880,7 @@
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item) => {
@@ -763,16 +908,12 @@
           <span class="schema-review-status ${view.statusClass}">${escapeHtml(view.statusLabel)}</span>
         </div>
         <p class="schema-review-copy">${escapeHtml(view.copy)}</p>
-        <div class="schema-download-row">
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
-        </div>
+        ${schemaDownloadRow(false)}
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
@@ -912,6 +1053,9 @@
           card.status = stage.status || card.status;
         }
         card.title = stage.label || card.title;
+        // Carry the server-stamped per-step start so the live timer measures the
+        // current subagent's own elapsed time and resets when the step changes.
+        if (stage.started_at) card.startedAt = stage.started_at;
         const live = (state.liveStream || {})[stage.id];
         if (live && stage.status !== 'done') {
           if (live.thinking) card.thinking = normalizeActivityText(live.thinking);
@@ -1036,7 +1180,7 @@
     `;
     if (isDone) {
       return `
-        <section class="task-node done ${expanded ? 'expanded' : 'folded'}">
+        <section class="task-node done ${expanded ? 'expanded' : 'folded'}" data-stage="${escapeHtml(card.id)}">
           <div class="run-card ontology-task-card complete">
             <div class="run-card-head completed-task-head">
               <div class="task-node-title">
@@ -1056,9 +1200,9 @@
         </section>
       `;
     }
-    const workingLabel = isWaiting ? '等待确认' : `${escapeHtml(stageAgent(card.id).label)} 执行中`;
+    const workingLabel = isWaiting ? 'Waiting for confirmation' : `${escapeHtml(stageAgent(card.id).label)} running`;
     return `
-      <section class="task-node ${escapeHtml(status)} expanded">
+      <section class="task-node ${escapeHtml(status)} expanded" data-stage="${escapeHtml(card.id)}">
         <div class="run-card ontology-task-card working">
           <div class="run-card-head">
             <div class="task-node-title">
@@ -1066,7 +1210,7 @@
               ${agentBadgeHtml(card.id)}
               <span class="task-node-stage">${escapeHtml(card.title)}</span>
               <span class="task-node-working">${workingLabel}</span>
-              ${isRunning ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>` : ''}
+              ${isRunning ? `<span class="work-elapsed" data-since="${card.startedAt || state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (card.startedAt || state.runStartedAt || Date.now()))}</span>` : ''}
             </div>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
@@ -1097,9 +1241,23 @@
   }
 
   function renderStagePipeline(cards, isLatest, groupKey) {
-    if (!cards.length) return '';
-    // The current run stays fully expanded with the live tool bar.
-    if (isLatest) {
+    if (!cards.length) {
+      // A segment is running but its first task card has not landed yet: still
+      // show the coordinator banner so feedback is immediate (the coordinator's
+      // own reasoning streams on the __coordinator__ lane).
+      if (isLatest && state.running) {
+        return `
+        <article class="message event stage-pipeline-message orchestration">
+          ${coordinatorBannerHtml(true)}
+        </article>`;
+      }
+      return '';
+    }
+    // The current run stays fully expanded with the live tool bar — but only
+    // while it is actually running. Once the run finishes (the final answer is
+    // in), the latest group collapses to the same slim timeline as earlier
+    // groups so the last round of tool calls no longer stays expanded.
+    if (isLatest && state.running) {
       return `
         <article class="message event stage-pipeline-message orchestration">
           ${coordinatorBannerHtml(true)}
@@ -1119,7 +1277,7 @@
       <div class="stage-group-bar-head">
         <span class="stage-group-summary-title">
           <span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span>
-          <span class="run-check">✓</span> 已编排 ${cards.length} ${stepWord}
+          <span class="run-check">✓</span> Orchestrated ${cards.length} ${stepWord}
         </span>
         <button class="task-toggle-button stage-group-toggle" type="button" data-stage-group="${escapeHtml(groupKey)}" aria-expanded="${expanded}">${expanded ? 'Hide' : 'Show details'}</button>
       </div>
@@ -1147,11 +1305,11 @@
   function buildMessageTimeline(messages) {
     const items = [];
     let eventBuffer = [];
-    const flushEvents = () => {
+    const flushEvents = (allowEmpty = false) => {
       if (!eventBuffer.length) return;
       const cards = buildStageCards(eventBuffer);
-      if (cards.length) {
-        const groupKey = cards.map((card) => card.id).join('-');
+      if (cards.length || (allowEmpty && state.running)) {
+        const groupKey = cards.length ? cards.map((card) => card.id).join('-') : 'live';
         items.push({ role: 'pipeline', cards, groupKey });
       }
       eventBuffer = [];
@@ -1167,8 +1325,8 @@
       flushEvents();
       items.push(message);
     });
-    flushEvents();
-    if (!items.some((item) => item.role === 'pipeline') && (state.stages || []).some((stage) => stage.status !== 'pending')) {
+    flushEvents(true);
+    if (!items.some((item) => item.role === 'pipeline') && (state.running || (state.stages || []).some((stage) => stage.status !== 'pending'))) {
       items.push({ role: 'pipeline', cards: buildStageCards([]), groupKey: 'live' });
     }
     // Only the final pipeline group (the current run) may show live "working"
@@ -1214,10 +1372,12 @@
     const steps = (clarification.steps || []).map((step) => String(step || '').trim()).filter(Boolean);
     if (!problem || !steps.length || state.running) return;
     const payload = { type: 'confirm_problem', problem, steps };
+    state.forceScroll = true;
     if (state.wsReady) {
+      setRunning(true, 'The agent is working on your request…');
       state.ws.send(JSON.stringify(payload));
     } else {
-      sendViaHttp(payload);
+      sendViaHttp(payload, { optimistic: false });
     }
   }
 
@@ -1331,7 +1491,7 @@
           <article class="message assistant">
             <div class="avatar coordinator-answer-avatar" title="Coordinator">${escapeHtml(COORDINATOR_AGENT.icon)}</div>
             <div class="bubble">
-              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>主控 Agent</span><span class="coordinator-answer-note">综合各子Agent结果给出最终答案</span></div>
+              <div class="coordinator-answer-tag"><span class="coordinator-pill"><span class="coordinator-pill-glyph">${escapeHtml(COORDINATOR_AGENT.icon)}</span>Coordinator</span><span class="coordinator-answer-note">Final answer synthesized from all subagent results</span></div>
               ${renderAssistantContent(message)}
             </div>
           </article>
@@ -1477,6 +1637,56 @@
     if (el.uploadMetric) el.uploadMetric.textContent = `${state.uploads.length} uploaded file(s)`;
   }
 
+  const PANEL_INTROS = {
+    evidence: {
+      icon: '◈',
+      kicker: 'Files & Evidence',
+      title: 'Evidence for grounding',
+      desc: 'Upload CSV / TXT / MD files and review the evidence manifest the agent collected. Everything the schema and answers are built from lives here.',
+    },
+    schema: {
+      icon: '▦',
+      kicker: 'Schema Studio',
+      title: 'Your ontology schema',
+      desc: 'Review the entities and relations the agent built, edit the draft, and download the schema or tables. The confirmed schema drives extraction and solving.',
+    },
+    progress: {
+      icon: '◎',
+      kicker: 'Run & Results',
+      title: 'Pipeline progress',
+      desc: 'Track the eight-stage ontology QA pipeline — from clarifying your question to the final grounded answer.',
+    },
+  };
+
+  function panelIntro(tab) {
+    const intro = PANEL_INTROS[tab];
+    if (!intro) return '';
+    return `
+      <div class="panel-intro">
+        <span class="panel-intro-icon" aria-hidden="true">${intro.icon}</span>
+        <div class="panel-intro-text">
+          <span class="panel-intro-kicker">${escapeHtml(intro.kicker)}</span>
+          <h2 class="panel-intro-title">${escapeHtml(intro.title)}</h2>
+          <p class="panel-intro-desc">${escapeHtml(intro.desc)}</p>
+        </div>
+      </div>`;
+  }
+
+  function schemaDownloadRow(compact) {
+    const sid = encodeURIComponent(state.sessionId);
+    const pill = (kind, name, sub) => `
+      <a class="download-pill ${kind}" href="/api/schema/download?session_id=${sid}&kind=${kind}" target="_blank" rel="noopener" download>
+        <span class="dl-text"><span class="dl-name">${name}</span><small>${sub}</small></span>
+      </a>`;
+    return `
+      <div class="schema-download-row${compact ? ' compact' : ''}" role="group" aria-label="Download the schema">
+        <span class="download-label">Downloads</span>
+        ${pill('python', 'Python schema', '.py source')}
+        ${pill('entities', 'Entity table', '.csv')}
+        ${pill('relations', 'Relation table', '.csv')}
+      </div>`;
+  }
+
   async function renderEvidenceTab() {
     let evidence = { sources: [], needs_web_search: false };
     try { evidence = await api(withSession('/api/evidence')); } catch (err) { /* ignore */ }
@@ -1515,6 +1725,7 @@
       `
       : emptyManifest;
     el.evidenceContent.innerHTML = `
+      ${panelIntro('evidence')}
       <div class="onto-section">
         <div class="onto-section-head">
           <h3>Uploaded Files</h3>
@@ -1581,6 +1792,7 @@
     const schema = state.schema;
     if (!schema || schema.status === 'none' || !schema.schema_text) {
       el.schemaContent.innerHTML = `
+        ${panelIntro('schema')}
         <div class="onto-section">
           <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge('none')}</div>
           <div class="onto-empty">No schema yet. Ask a question and confirm it, and the agent will build a draft schema here for you to review, edit and confirm.</div>
@@ -1596,6 +1808,7 @@
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item) => {
@@ -1614,18 +1827,15 @@
       `;
     }).join('');
     el.schemaContent.innerHTML = `
+      ${panelIntro('schema')}
       <div class="onto-section">
         <div class="onto-section-head"><h3>Ontology Schema</h3>${schemaStatusBadge(schema.status)}</div>
         <p class="onto-section-hint">${schema.status === 'draft' ? 'Draft schema is shown here for read-only review. Use Open Schema Studio in the confirmation card to edit it.' : 'Schema confirmed and in use for data extraction and solving.'}</p>
-        <div class="schema-download-row compact">
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
-          <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
-        </div>
+          ${schemaDownloadRow(true)}
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
         </table></div>
         <h4 class="onto-subhead">Relation Schema</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
@@ -1656,6 +1866,7 @@
         <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}">` : escapeHtml(item.name)}</td>
         <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}">` : escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item, index) => {
@@ -1678,19 +1889,15 @@
         <section class="schema-preview-card modal-preview">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
             <thead><tr><th>Head Entity</th><th>Head Entity Type</th><th>Head Entity Data Type</th><th>Relation Name</th><th>Tail Entity</th><th>Tail Entity Type</th><th>Tail Entity Data Type</th></tr></thead>
             <tbody>${relationRows || '<tr><td colspan="7">None</td></tr>'}</tbody>
           </table></div>
-          <div class="schema-download-row compact">
-            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=python" target="_blank" rel="noopener">Download Python schema</a>
-            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=entities" target="_blank" rel="noopener">Download entity table</a>
-            <a href="/api/schema/download?session_id=${encodeURIComponent(state.sessionId)}&kind=relations" target="_blank" rel="noopener">Download relation table</a>
-          </div>
+          ${schemaDownloadRow(true)}
           ${editable ? `
             <div class="onto-schema-actions">
               <button class="onto-btn secondary" id="schema-modal-apply" disabled>Apply changes</button>
@@ -1807,6 +2014,7 @@
         `).join('')
       : '<div class="onto-empty">No runs yet. Send a question to see pipeline progress here.</div>';
     el.progressContent.innerHTML = `
+      ${panelIntro('progress')}
       <div class="onto-section">
         <div class="onto-section-head"><h3>Pipeline Progress</h3></div>
         <p class="onto-section-hint">This view only tracks the eight main ontology QA stages.</p>

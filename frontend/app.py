@@ -61,10 +61,10 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 SESSION_DIR = ROOT / "outputs" / "deepagents_kbqa_general" / "frontend_sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
-# Hardcoded fallback requested for local frontend launch.
-HARDCODED_SILICONFLOW_API_KEY = "sk-jrbbpcqrcszeayxawoblajrquctswwofkjwtlnoiqdavkfyx"
-if HARDCODED_SILICONFLOW_API_KEY and not os.environ.get("SILICONFLOW_API_KEY"):
-    os.environ["SILICONFLOW_API_KEY"] = HARDCODED_SILICONFLOW_API_KEY
+# The API key must come from the environment (e.g. a local .env). Never commit a
+# plaintext key — see .env.example for the variables this app expects.
+if not os.environ.get("SILICONFLOW_API_KEY"):
+    os.environ.setdefault("SILICONFLOW_API_KEY", "")
 
 CONFIG_PATH = Path(os.environ.get("HARNESS_CONFIG", ROOT / "harness.json")).expanduser()
 CONFIG = load_config(CONFIG_PATH)

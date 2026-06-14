@@ -53,6 +53,34 @@ manifest yourself by calling `save_evidence_manifest` (see below) and put the
 and the evidence you actually collected; never reuse an unrelated example
 domain. Entity and relation names must be specific to the user's question.
 
+## Schema Plan Modeling Rules (critical)
+
+The `schema_plan` is an **ontology**, not a single spreadsheet. Model the real
+structure of the question, not a flattened answer table.
+
+- **Decompose distinct real-world entity types.** When the question mentions
+  several kinds of real-world things that relate to each other (for example a
+  person, an organization they lead, a work they created, a place), model each
+  kind as its **own** entity, and connect them with relations. Do **not** collapse
+  several different entity types into one denormalized class whose fields are just
+  the other things' names (e.g. a single `WinnerRow` entity with `actor_name`,
+  `movie_name`, `person_played` string fields is wrong — those are separate
+  `Actor`, `Film`, `Person` entities joined by relations).
+- **Attributes vs. relations.** A field is an **attribute** (list it under the
+  entity's `fields`) when its value is a literal: a number, a year, a date, a
+  short string, a boolean. A field is a **relation** only when it points to
+  **another entity you also define** in this same `schema_plan`.
+- **Every relation endpoint must be a defined entity.** For each `kind: "relation"`
+  entry, both its `head` and its `tail` must be the `name` of a `kind: "entity"`
+  entry in the same `schema_plan`. Never point a relation at something you did not
+  define as an entity. If the target is really just a literal value (such as a
+  year or a count), make it an attribute instead of a relation — do **not** invent
+  a relation to an undefined entity (it will be dropped as a dangling relation).
+- A single-entity, zero-relation plan is only appropriate when the question truly
+  concerns one kind of thing filtered by its own attributes. If the question
+  implies a join between different kinds of things, the plan must contain the
+  corresponding entities and the forward relations between them.
+
 ## Planning Contract (`write_todos`)
 
 After reading the uploaded sources and assessing evidence sufficiency, you must call `write_todos` to record a schema plan before writing the manifest; later calls may only update statuses, never change `[plan]` contents. If `upload_paths` is empty, skip the reading step and start directly from the sufficiency assessment.

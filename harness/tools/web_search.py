@@ -66,7 +66,11 @@ def web_search(query: str, num_results: int = 3) -> str:
             ensure_ascii=False,
         )
 
-    api_key = os.environ.get("SERPER_API_KEY", "") or service_cfg.get("api_key", "")
+    file_key = service_cfg.get("api_key", "") or ""
+    if file_key.startswith("${"):
+        # An unresolved ${SERPER_API_KEY} placeholder is not a real key.
+        file_key = ""
+    api_key = os.environ.get("SERPER_API_KEY", "") or file_key
     if not api_key:
         return json.dumps({"error": "SERPER_API_KEY not set"}, ensure_ascii=False)
 
