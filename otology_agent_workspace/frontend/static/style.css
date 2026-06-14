@@ -8066,42 +8066,48 @@ body.modal-open { overflow: hidden; }
 
 /* Delegation chip row: the six subagents the coordinator can call, with the
    currently active one highlighted. */
-/* The delegation chain stays on a single row (#7): never wrap; if the six
-   subagents don't fit, the row scrolls horizontally instead of breaking. */
+/* The delegation chain stays on a single row (#7): never wrap and never scroll.
+   The chips share the available width and shrink to fit so all six are always
+   visible at once; an over-long name ellipsizes (full name stays in the title). */
 .deleg-chip-row {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 5px;
+  gap: 4px;
   margin-top: 12px;
   min-width: 0;
-  overflow-x: auto;
-  padding-bottom: 3px;
-  scrollbar-width: thin;
+  width: 100%;
 }
-.deleg-chip-row::-webkit-scrollbar { height: 5px; }
-.deleg-chip-row::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; }
 .deleg-chip {
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
-  gap: 6px;
-  padding: 5px 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 5px;
+  padding: 5px 9px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--bg-soft);
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink-muted);
+  justify-content: center;
   transition: background .2s ease, color .2s ease, border-color .2s ease, transform .2s ease;
 }
 .deleg-chip-glyph {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   opacity: 0.85;
 }
-.deleg-chip-dot { font-size: 10px; line-height: 1; }
+.deleg-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deleg-chip-dot { flex: 0 0 auto; font-size: 10px; line-height: 1; }
 .deleg-chip.done {
   color: var(--success);
   border-color: color-mix(in srgb, var(--success) 32%, transparent);
@@ -8124,9 +8130,9 @@ body.modal-open { overflow: hidden; }
 .deleg-arrow {
   flex: 0 0 auto;
   color: var(--ink-muted);
-  font-size: 12px;
-  opacity: 0.55;
-  padding: 0 1px;
+  font-size: 11px;
+  opacity: 0.5;
+  padding: 0;
 }
 
 .coordinator-narration {

@@ -135,6 +135,8 @@ Structure it like a real report:
 - **Body sections** — organize the solver's `result` rows into logical `##` (and `###` where useful) sections that match the question's facets. Present grouped or tabular data as Markdown **tables**; present enumerations as bulleted or numbered lists. Use a table whenever rows share the same columns (e.g. items with a name + several attributes). Keep headings specific and informative, not generic.
 - **数据来源 / 说明** — close with a brief note stating which ontology schema and which workspace data files (`facts.csv` / `relations.csv`) the answer was computed from, and call out any gaps or low-confidence items the solver flagged.
 
+Output the report **only** — your entire final message is the report itself, beginning directly with the `#` title line. Do not prepend any preamble, lead-in, or meta-commentary (e.g. "现在撰写最终报告", "根据 solver 的结果，以下是报告", "好的，") and do not wrap it in a code fence; the user downloads this message verbatim as the deliverable.
+
 Hard grounding rule: every fact, number, name, and relationship in the report must come from the solver's `solver_result.json` (its `answer` and `result` rows). Do **not** add, embellish, or "fill in" anything from your own memory or general knowledge — if the solver did not compute it, it does not go in the report. You are reformatting and presenting the solver's computed result into a polished report, not authoring new facts. Write the whole report in Chinese unless the user asked for another language.
 
 ## Handling other / follow-up needs (be flexible)

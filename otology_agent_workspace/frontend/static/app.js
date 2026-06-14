@@ -98,12 +98,12 @@
   const COORDINATOR_AGENT = { agent: 'ontology_coordinator', label: 'Coordinator', icon: '◉' };
   const SUBAGENT_ORDER = ['clarify', 'evidence', 'schema_build', 'schema_judge', 'extract', 'solve'];
   const STAGE_AGENTS = {
-    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', icon: '◇' },
-    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', icon: '◈' },
-    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    icon: '▦' },
-    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     icon: '§' },
-    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    icon: '⛏' },
-    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  icon: 'ƒ' },
+    clarify:      { agent: 'problem_clarifier', label: 'Problem Clarifier', short: 'Clarifier', icon: '◇' },
+    evidence:     { agent: 'evidence_collector', label: 'Evidence Collector', short: 'Evidence', icon: '◈' },
+    schema_build: { agent: 'schema_builder',    label: 'Schema Builder',    short: 'Builder',   icon: '▦' },
+    schema_judge: { agent: 'schema_judger',     label: 'Schema Judger',     short: 'Judger',    icon: '§' },
+    extract:      { agent: 'data_extractor',    label: 'Data Extractor',    short: 'Extractor', icon: '⛏' },
+    solve:        { agent: 'workspace_solver',  label: 'Workspace Solver',  short: 'Solver',    icon: 'ƒ' },
   };
   function stageAgent(stageId) {
     return STAGE_AGENTS[stageId] || { agent: stageId, label: stageId || 'Subagent', icon: '●' };
@@ -143,7 +143,7 @@
       const dot = status === 'done' ? '✓' : (status === 'running' ? '●' : '');
       return `<span class="deleg-chip ${cls}${live ? ' live' : ''}" title="${escapeHtml(a.label)} · ${escapeHtml(status)}">
           <span class="deleg-chip-glyph">${agentIconSvg(id)}</span>
-          <span class="deleg-chip-name">${escapeHtml(a.label)}</span>
+          <span class="deleg-chip-name">${escapeHtml(a.short || a.label)}</span>
           <span class="deleg-chip-dot">${dot}</span>
         </span>`;
     }).join('<span class="deleg-arrow" aria-hidden="true">→</span>')}</div>`;
