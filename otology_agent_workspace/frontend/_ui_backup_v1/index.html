@@ -8,7 +8,7 @@
   <title>Ontology QA Agent</title>
   <link rel="icon" href="/static/assets/knowcoder-logo.svg" type="image/svg+xml">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=20260613-agent-hierarchy2">
+  <link rel="stylesheet" href="/static/style.css?v=20260613-flow-polish15">
 </head>
 <body class="light-theme" data-agent-id="ontology_coordinator">
   <aside class="side-rail" id="side-rail" aria-label="Session history">
@@ -64,9 +64,9 @@
           </div>
           <h1 class="welcome-title">Ontology QA Agent</h1>
         </div>
-        <p class="welcome-description">An ontology-centric question answering agent. A pure-LLM <strong>Coordinator</strong> autonomously delegates to six subagents — clarifying your question, collecting evidence, building and judging an ontology schema, extracting data, then solving the problem with code in a dedicated workspace — to deliver grounded, traceable answers.</p>
+        <p class="welcome-description">An ontology-centric question answering agent: it clarifies your question, builds an ontology schema from uploaded files and web evidence, then — after your confirmation — extracts data and solves the problem with code in a dedicated workspace, delivering grounded answers.</p>
         <div class="quick-metrics" id="quick-metrics">
-          <div class="metric-card"><span>Orchestration</span><strong>Coordinator + 6 subagents</strong></div>
+          <div class="metric-card"><span>Pipeline</span><strong>8-step visual workflow</strong></div>
           <div class="metric-card"><span>Files</span><strong id="upload-metric">0 uploaded file(s)</strong></div>
         </div>
         <button class="hero-upload-btn" id="hero-upload" type="button">
@@ -123,7 +123,7 @@
       </div>
       <div class="ai-disclaimer">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14Zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16Zm.93-9.41-2.29.28-.08.38.45.08c.29.07.35.18.29.47l-.74 3.47c-.2.9.1 1.32.8 1.32.55 0 1.18-.25 1.47-.6l.09-.42c-.2.18-.5.25-.69.25-.27 0-.37-.2-.3-.53l1-4.7ZM9 4.5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></svg>
-        <span>Enter to send · Shift + Enter for a new line · The Coordinator runs the full workflow autonomously</span>
+        <span>Enter to send · Shift + Enter for a new line · Confirmation steps will be prompted in the chat</span>
       </div>
     </div>
   </section>
@@ -238,6 +238,6 @@
   </script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
-  <script src="/static/app.js?v=20260613-agent-hierarchy2"></script>
+  <script src="/static/app.js?v=20260613-flow-polish15"></script>
 </body>
 </html>
