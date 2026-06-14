@@ -461,6 +461,20 @@
     return (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
   }
 
+  // Cap the live (streaming) reasoning/output that is re-rendered every frame.
+  // A single step's accumulated reasoning can grow to tens of KB; rebuilding
+  // that much innerHTML on each animation frame for the whole length of a long
+  // run pressures the renderer and, on the longest runs, can crash the tab. The
+  // live panes are ephemeral — only the most recent reasoning matters while a
+  // step streams — so we keep the tail and drop the older prefix. Completed
+  // steps collapse and do not show this text at all.
+  const LIVE_TEXT_CAP = 8000;
+  function clampLiveText(text) {
+    const str = String(text || '');
+    if (str.length <= LIVE_TEXT_CAP) return str;
+    return '…\n' + str.slice(str.length - LIVE_TEXT_CAP);
+  }
+
   // Incrementally update the live coordinator narration and the active subagent's
   // reasoning/output panes without rebuilding the whole message tree. Returns
   // false when the live group is not in the DOM yet so the caller can fall back
@@ -494,11 +508,36 @@
       if (!node) return;
       const data = live[stage] || {};
       const rEl = node.querySelector('.run-reasoning-output');
-      if (rEl) rEl.innerHTML = data.thinking ? escapeHtml(sanitizeDisplayText(data.thinking)) : '<span class="live-placeholder">Waiting for live model update…</span>';
+      if (rEl) rEl.innerHTML = data.thinking ? escapeHtml(sanitizeDisplayText(clampLiveText(data.thinking))) : '<span class="live-placeholder">Waiting for live model update…</span>';
       const oEl = node.querySelector('.run-model-output');
-      if (oEl) oEl.innerHTML = data.output ? formatMarkdown(data.output) : '<span class="live-placeholder">Waiting for model output…</span>';
+      if (oEl) oEl.innerHTML = data.output ? formatMarkdown(clampLiveText(data.output)) : '<span class="live-placeholder">Waiting for model output…</span>';
     });
     return true;
+  }
+
+  // Coalesce high-frequency live events (token streams + activity logs) into at
+  // most one DOM pass per animation frame. A single working segment can emit
+  // many hundreds of stream/activity events; rendering synchronously on each one
+  // starves the main thread so the page appears frozen until the run ends (and
+  // only a refresh, which rehydrates from `history`, shows the result). Bundling
+  // the work per frame keeps the UI responsive while the segment streams.
+  let liveFlushScheduled = false;
+  let pendingFullRender = false;
+  function flushLiveUpdates() {
+    liveFlushScheduled = false;
+    const full = pendingFullRender;
+    pendingFullRender = false;
+    if (full) {
+      renderMessages({ preserveScroll: true });
+    } else if (!updateLiveStreamDom()) {
+      renderMessages({ preserveScroll: true });
+    }
+  }
+  function scheduleLiveUpdate(fullRender) {
+    if (fullRender) pendingFullRender = true;
+    if (liveFlushScheduled) return;
+    liveFlushScheduled = true;
+    window.requestAnimationFrame(flushLiveUpdates);
   }
 
   function handleWsEvent(payload) {
@@ -572,15 +611,15 @@
           thinking: payload.thinking || '',
           output: payload.output || '',
         };
-        // Targeted in-place update; only fall back to a full render if the live
-        // group is not on screen yet.
-        if (!updateLiveStreamDom()) renderMessages({ preserveScroll: true });
+        // Coalesced targeted update (falls back to a full render inside the
+        // flush if the live group is not on screen yet).
+        scheduleLiveUpdate(false);
       }
       return;
     }
     if (payload.type === 'activity') {
       state.messages.push(payload.message);
-      renderMessages({ preserveScroll: true });
+      scheduleLiveUpdate(true);
       return;
     }
     if (payload.type === 'assistant_final') {
@@ -601,6 +640,7 @@
     }
     if (payload.type === 'run_done') {
       state.liveStream = {};
+      pendingFullRender = false;
       setRunning(false);
       stopHistoryPolling();
       renderMessages();
@@ -1054,8 +1094,8 @@
         if (stage.started_at) card.startedAt = stage.started_at;
         const live = (state.liveStream || {})[stage.id];
         if (live && stage.status !== 'done') {
-          if (live.thinking) card.thinking = normalizeActivityText(live.thinking);
-          if (live.output) card.output = normalizeActivityText(live.output);
+          if (live.thinking) card.thinking = normalizeActivityText(clampLiveText(live.thinking));
+          if (live.output) card.output = normalizeActivityText(clampLiveText(live.output));
         }
         return card;
       });
@@ -1580,7 +1620,11 @@
     el.messages.querySelectorAll('[data-action="open-schema"]').forEach((button) => {
       button.addEventListener('click', () => openSchemaModal());
     });
-    if (window.Prism) window.Prism.highlightAllUnder(el.messages);
+    // Skip syntax highlighting while a run streams: the live output pane is
+    // rendered without Prism anyway, and re-highlighting the whole transcript on
+    // every coalesced frame is costly. The run_done / idle render highlights once
+    // the segment settles.
+    if (window.Prism && !state.running) window.Prism.highlightAllUnder(el.messages);
     if (shouldAutoScroll) {
       el.messages.scrollTop = el.messages.scrollHeight;
       scrollToLatestMessage('smooth');
