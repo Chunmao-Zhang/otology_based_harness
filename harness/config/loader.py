@@ -51,7 +51,7 @@ def load_env_file(path: str | Path, *, override: bool = False) -> None:
         key = key.strip()
         if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
             continue
-        if not override and key in os.environ:
+        if not override and os.environ.get(key):
             continue
         value = value.strip()
         if value:
@@ -86,7 +86,7 @@ def load_project_env(config_path: str | Path) -> None:
 
     config_dir = Path(config_path).resolve().parent
     load_env_file(config_dir / ".env.example")
-    load_env_file(config_dir / ".env")
+    load_env_file(config_dir / ".env", override=True)
 
 
 def _parse_providers(data: dict[str, Any] | None) -> dict[str, ProviderConfig]:
