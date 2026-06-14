@@ -18,11 +18,25 @@ def schema_to_form(schema_text: str | None = None, schema_path: str | Path | Non
 
     form: list[dict[str, Any]] = []
     for class_info in parsed.classes:
+        id_type = "str"
+        attributes: list[dict[str, Any]] = []
+        for item in class_info.fields:
+            if item.name == "_id":
+                id_type = item.value_type or "str"
+                continue
+            if item.kind in ("primitive", "optional_primitive"):
+                attributes.append({
+                    "name": item.name,
+                    "value_type": item.value_type or "str",
+                    "optional": item.kind == "optional_primitive",
+                })
         form.append({
             "type": "entity",
             "name": class_info.name,
             "entity_type": class_info.entity_type,
             "value_type": class_info.value_type,
+            "id_type": id_type,
+            "attributes": attributes,
         })
 
     for class_info in parsed.classes:
@@ -55,11 +69,39 @@ def confirm_schema(draft_path: str | Path, confirmed_path: str | Path) -> dict[s
     }
 
 
+def _entity_base_fields(entity: dict[str, Any]) -> list[str]:
+    """Reconstruct an entity's `_id` + primitive attribute lines from the form.
+
+    Preserving these is what stops a Schema Studio edit from silently dropping
+    every attribute (which previously left each class as just `_id`/`name`).
+    """
+    id_type = entity.get("id_type") or "str"
+    if id_type not in ("str", "int"):
+        id_type = "str"
+    lines = [f"    _id: {id_type}"]
+    attributes = entity.get("attributes")
+    if attributes is None:
+        # Backward-compatible default for forms that carry no attribute detail.
+        return [f"    _id: {id_type}", "    name: str"]
+    for attr in attributes:
+        aname = (attr.get("name") or "").strip()
+        if not aname or aname == "_id":
+            continue
+        vtype = attr.get("value_type") or "str"
+        if vtype not in ("str", "int", "float", "bool"):
+            vtype = "str"
+        if attr.get("optional"):
+            lines.append(f"    {aname}: Optional[{vtype}]")
+        else:
+            lines.append(f"    {aname}: {vtype}")
+    return lines
+
+
 def generate_schema_from_form(form: list[dict[str, Any]], output_path: str | Path | None = None) -> str:
     entities = [item for item in form if item.get("type") == "entity"]
     relations = [item for item in form if item.get("type") == "relation"]
 
-    fields_by_entity: dict[str, list[str]] = {item["name"]: ["    _id: str", "    name: str"] for item in entities}
+    fields_by_entity: dict[str, list[str]] = {item["name"]: _entity_base_fields(item) for item in entities}
     entity_types = {item["name"]: item.get("entity_type", item["name"]) for item in entities}
 
     for rel in relations:
@@ -68,9 +110,9 @@ def generate_schema_from_form(form: list[dict[str, Any]], output_path: str | Pat
         name = rel["relation"]
         rel_type = rel.get("relation_type", "many_to_many")
         if rel_type == "many_to_one":
-            fields_by_entity.setdefault(head, []).append(f"    {name}: Optional[\"{tail}\"]")
+            fields_by_entity.setdefault(head, ["    _id: str", "    name: str"]).append(f"    {name}: Optional[\"{tail}\"]")
         else:
-            fields_by_entity.setdefault(head, []).append(f"    {name}: List[\"{tail}\"]")
+            fields_by_entity.setdefault(head, ["    _id: str", "    name: str"]).append(f"    {name}: List[\"{tail}\"]")
         fields_by_entity.setdefault(tail, ["    _id: str", "    name: str"]).append(
             f"    {name}_r: List[\"{head}\"]  # reverse"
         )

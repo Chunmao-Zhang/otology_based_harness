@@ -6220,6 +6220,11 @@ textarea#message-input.chat-input:focus-visible,
   line-height: 1.6;
 }
 
+.onto-muted { color: var(--ink-muted); }
+
+.onto-schema-table .schema-attr-cell,
+.onto-schema-table td:last-child { word-break: break-word; }
+
 .onto-upload-btn span {
   display: inline-flex;
   align-items: center;

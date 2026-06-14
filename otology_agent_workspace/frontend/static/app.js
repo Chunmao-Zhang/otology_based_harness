@@ -78,6 +78,13 @@
     toolKeys: {},
     runStartedAt: 0,
     pendingOptimistic: [],
+    // WebSocket resilience: tunnels can drop a long-running socket. We auto-
+    // reconnect, and while a run is still in flight we poll history so the run's
+    // persisted progress/result is recovered even though the live stream lapsed.
+    wsConnectedOnce: false,
+    wsReconnectAttempts: 0,
+    wsReconnectTimer: null,
+    historyPollTimer: null,
   };
 
   // ── Agent identity: coordinator vs subagents ─────────────────────────────
@@ -360,6 +367,12 @@
   // ── Sessions & WebSocket ────────────────────────────────────────────────
 
   async function startSession(sessionId) {
+    // Switching sessions: tear down any pending reconnect/poll for the old socket
+    // and null it out so its close handler won't reconnect to the old session.
+    stopHistoryPolling();
+    if (state.wsReconnectTimer) { clearTimeout(state.wsReconnectTimer); state.wsReconnectTimer = null; }
+    state.wsConnectedOnce = false;
+    state.wsReconnectAttempts = 0;
     if (state.ws) {
       try { state.ws.close(); } catch (err) { /* ignore */ }
       state.ws = null;
@@ -396,14 +409,51 @@
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${protocol}://${window.location.host}/ws/${state.sessionId}`);
     state.ws = ws;
-    ws.addEventListener('open', () => { state.wsReady = true; });
-    ws.addEventListener('close', () => { state.wsReady = false; });
+    ws.addEventListener('open', () => {
+      state.wsReady = true;
+      state.wsReconnectAttempts = 0;
+      // On a *reconnect* (not the first connect), recover anything we missed while
+      // offline: the server replays history on connect, and if a run is still in
+      // flight we poll history until it settles (gate opens or answer arrives).
+      if (state.wsConnectedOnce && state.running) startHistoryPolling();
+      state.wsConnectedOnce = true;
+    });
+    ws.addEventListener('close', () => {
+      state.wsReady = false;
+      // Only reconnect if this is still the active socket (not one we replaced
+      // by switching sessions).
+      if (state.ws === ws) scheduleReconnect();
+    });
     ws.addEventListener('error', () => { state.wsReady = false; });
     ws.addEventListener('message', (event) => {
       let payload = null;
       try { payload = JSON.parse(event.data); } catch (err) { return; }
       handleWsEvent(payload);
     });
+  }
+
+  function scheduleReconnect() {
+    if (state.wsReconnectTimer) return;
+    const delay = Math.min(1000 * (2 ** (state.wsReconnectAttempts || 0)), 8000);
+    state.wsReconnectAttempts = (state.wsReconnectAttempts || 0) + 1;
+    state.wsReconnectTimer = setTimeout(() => {
+      state.wsReconnectTimer = null;
+      if (state.sessionId) connectWs();
+    }, delay);
+  }
+
+  function startHistoryPolling() {
+    if (state.historyPollTimer) return;
+    state.historyPollTimer = setInterval(() => {
+      if (!state.running) { stopHistoryPolling(); return; }
+      if (state.wsReady && state.ws) {
+        try { state.ws.send(JSON.stringify({ type: 'history' })); } catch (err) { /* ignore */ }
+      }
+    }, 4000);
+  }
+
+  function stopHistoryPolling() {
+    if (state.historyPollTimer) { clearInterval(state.historyPollTimer); state.historyPollTimer = null; }
   }
 
   function cssEscapeId(value) {
@@ -456,8 +506,19 @@
       state.sessionId = session.id || state.sessionId;
       state.messages = session.messages || [];
       state.stages = session.stages || [];
+      // Recover run state after a reconnect: if no stage is still running, the
+      // segment finished (a gate opened or the answer arrived) while we were
+      // offline — settle the UI and stop polling. Otherwise keep showing work.
+      const stages = state.stages || [];
+      const anyRunning = stages.some((s) => s.status === 'running');
+      if (state.running && !anyRunning) {
+        setRunning(false);
+        stopHistoryPolling();
+      }
       renderMessages();
       renderStageStrip();
+      // Reload the schema/uploads so a recovered schema gate renders fully.
+      refreshSidebarData();
       return;
     }
     if (payload.type === 'message') {
@@ -540,16 +601,16 @@
     if (payload.type === 'run_done') {
       state.liveStream = {};
       setRunning(false);
+      stopHistoryPolling();
       renderMessages();
       renderProgressTab();
     }
   }
 
-  // Anchor the live timer to when the current working segment started, then let
-  // it climb continuously until the segment ends (a confirmation gate or the
-  // final answer). The backend diagnosis showed ~97% of run time is model
-  // inference; a continuously counting timer makes long steps read as "still
-  // working" rather than "frozen".
+  // Each running step card anchors its timer to that step's own server-stamped
+  // start (`stage.started_at`), so the clock measures the current subagent's
+  // elapsed time and resets when the next subagent takes over. It falls back to
+  // the segment start only if no per-step stamp is available.
   function formatElapsed(ms) {
     const s = Math.max(0, Math.floor(ms / 1000));
     if (s < 60) return `${s}s`;
@@ -784,6 +845,17 @@
     };
   }
 
+  // Human-readable list of an entity's primitive attributes (the columns the
+  // data extractor will fill). Keeps the schema cards honest: a class is never
+  // just a name + type, it carries its real fields.
+  function attributesText(item) {
+    const attrs = (item && item.attributes) || [];
+    if (!attrs.length) return '';
+    return attrs
+      .map((a) => `${a.name}${a.optional ? '?' : ''}: ${a.value_type || 'str'}`)
+      .join(', ');
+  }
+
   function schemaPreviewTablesHtml() {
     const entities = state.schemaForm.filter((item) => item.type === 'entity');
     const relations = state.schemaForm.filter((item) => item.type === 'relation');
@@ -808,6 +880,7 @@
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item) => {
@@ -843,8 +916,8 @@
         <div class="schema-preview-card">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
@@ -984,6 +1057,9 @@
           card.status = stage.status || card.status;
         }
         card.title = stage.label || card.title;
+        // Carry the server-stamped per-step start so the live timer measures the
+        // current subagent's own elapsed time and resets when the step changes.
+        if (stage.started_at) card.startedAt = stage.started_at;
         const live = (state.liveStream || {})[stage.id];
         if (live && stage.status !== 'done') {
           if (live.thinking) card.thinking = normalizeActivityText(live.thinking);
@@ -1138,7 +1214,7 @@
               ${agentBadgeHtml(card.id)}
               <span class="task-node-stage">${escapeHtml(card.title)}</span>
               <span class="task-node-working">${workingLabel}</span>
-              ${isRunning ? `<span class="work-elapsed" data-since="${state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (state.runStartedAt || Date.now()))}</span>` : ''}
+              ${isRunning ? `<span class="work-elapsed" data-since="${card.startedAt || state.runStartedAt || Date.now()}" title="Elapsed time on the current step">${formatElapsed(Date.now() - (card.startedAt || state.runStartedAt || Date.now()))}</span>` : ''}
             </div>
             <span class="run-count">${toolCount} tool updates</span>
           </div>
@@ -1681,6 +1757,7 @@
         <td>${escapeHtml(item.name)}</td>
         <td>${escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item) => {
@@ -1709,8 +1786,8 @@
         </div>
         <h4 class="onto-subhead">Entity Definitions</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-          <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+          <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+          <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
         </table></div>
         <h4 class="onto-subhead">Relation Schema</h4>
         <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">
@@ -1741,6 +1818,7 @@
         <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="name" value="${escapeHtml(item.name)}">` : escapeHtml(item.name)}</td>
         <td>${editable ? `<input class="onto-cell-input" data-kind="entity" data-index="${index}" data-field="entity_type" value="${escapeHtml(item.entity_type || '')}">` : escapeHtml(item.entity_type || '')}</td>
         <td>${escapeHtml(item.value_type || 'str')}</td>
+        <td>${escapeHtml(attributesText(item)) || '<span class="onto-muted">—</span>'}</td>
       </tr>
     `).join('');
     const relationRows = relations.map((item, index) => {
@@ -1763,8 +1841,8 @@
         <section class="schema-preview-card modal-preview">
           <h4>Entity Definitions</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-entity-table">
-            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th></tr></thead>
-            <tbody>${entityRows || '<tr><td colspan="3">None</td></tr>'}</tbody>
+            <thead><tr><th>Entity</th><th>Entity Type</th><th>Entity Data Type</th><th>Attributes</th></tr></thead>
+            <tbody>${entityRows || '<tr><td colspan="4">None</td></tr>'}</tbody>
           </table></div>
           <h4>Relation Schema</h4>
           <div class="md-table-wrap"><table class="md-table onto-schema-table schema-relation-table">

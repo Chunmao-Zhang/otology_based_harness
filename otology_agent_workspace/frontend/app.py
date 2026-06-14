@@ -758,12 +758,18 @@ def set_stage(session: dict[str, Any], stage_id: str, status: str) -> None:
     if stage_id not in order:
         return
     target_index = order.index(stage_id)
+    now_ms = int(time.time() * 1000)
     for stage in session["stages"]:
         index = order.index(stage["id"])
         if index < target_index and stage["status"] in ("pending", "running", "waiting"):
             stage["status"] = "done"
         elif index == target_index:
             stage["status"] = status
+            # Stamp when this step actually began working so the UI can show a
+            # per-step elapsed timer that resets for each subagent, instead of a
+            # single clock that runs for the whole segment.
+            if status == "running" and not stage.get("started_at"):
+                stage["started_at"] = now_ms
 
 
 def stage_label(stage_id: str) -> str:
@@ -1267,10 +1273,15 @@ async def _emit_run_start(websocket: Any, session_id: str, note: str) -> None:
 
 
 async def _send_assistant_final(websocket: Any, session: dict[str, Any], message: dict[str, Any]) -> None:
-    await websocket.send_text(json.dumps(
-        {"type": "assistant_final", "message": message, "stages": session["stages"]},
-        ensure_ascii=False,
-    ))
+    # The final message is already persisted to STORE before this call, so if the
+    # socket dropped we just skip the push; the client recovers it via `history`.
+    try:
+        await websocket.send_text(json.dumps(
+            {"type": "assistant_final", "message": message, "stages": session["stages"]},
+            ensure_ascii=False,
+        ))
+    except (WebSocketDisconnect, RuntimeError):
+        pass
 
 
 async def _stream_run(websocket: Any, session_id: str, runner, on_done) -> None:
@@ -1300,84 +1311,92 @@ async def _stream_run(websocket: Any, session_id: str, runner, on_done) -> None:
     future = loop.run_in_executor(EXECUTOR, run_thread)
     run_error: str | None = None
 
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=900)
-            except asyncio.TimeoutError:
-                run_error = "The run timed out. Please retry or narrow the question."
-                break
+    # The client socket can drop mid-run (e.g. a tunnel idle-timeout on a long
+    # model step). When that happens we must NOT abort the run: we keep draining
+    # the queue so the segment finishes and every result is persisted to STORE,
+    # so a reconnecting client recovers the full state via `history`. Sends to a
+    # dead socket are swallowed instead of crashing the handler.
+    connected = True
 
-            etype = event["type"]
-            if etype == "_done":
-                run_error = await on_done(session_id, str(event.get("final", "")).strip())
-                break
+    async def safe_send(payload: dict[str, Any]) -> None:
+        nonlocal connected
+        if not connected:
+            return
+        try:
+            await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+        except (WebSocketDisconnect, RuntimeError):
+            # RuntimeError("WebSocket is not connected") is what Starlette raises
+            # once the peer has gone away; treat it the same as a disconnect.
+            connected = False
 
-            if etype == "_error":
-                run_error = "Something went wrong during the run. Please retry later."
-                break
+    while True:
+        try:
+            event = await asyncio.wait_for(queue.get(), timeout=900)
+        except asyncio.TimeoutError:
+            run_error = "The run timed out. Please retry or narrow the question."
+            break
 
-            if etype == "stream":
-                # Live token stream for the active lane. Ephemeral: forwarded to
-                # the client for the live card but not persisted to history.
-                await websocket.send_text(json.dumps({
-                    "type": "stream",
-                    "stage": event.get("stage", ""),
-                    "thinking": redact_paths(event.get("thinking", "")),
-                    "output": redact_paths(event.get("output", "")),
-                }, ensure_ascii=False))
-                continue
+        etype = event["type"]
+        if etype == "_done":
+            run_error = await on_done(session_id, str(event.get("final", "")).strip())
+            break
 
-            if etype == "activity":
-                session = STORE.get(session_id)
-                message = event.get("message")
-                if isinstance(message, dict):
-                    session["messages"].append(message)
-                    STORE.save(session)
-                    await websocket.send_text(json.dumps({"type": "activity", "message": message}, ensure_ascii=False))
-                continue
+        if etype == "_error":
+            run_error = "Something went wrong during the run. Please retry later."
+            break
 
-            if etype == "stage":
-                session = STORE.get(session_id)
-                set_stage(session, event["stage"], event.get("status", "running"))
-                status = event.get("status", "running")
-                key = f"{event['stage']}:{status}"
-                activity = None
-                if status in ("running", "waiting", "done") and key not in activity_seen:
-                    activity_seen.add(key)
-                    activity = stage_activity(event["stage"], status)
-                    session["messages"].append(activity)
+        if etype == "stream":
+            # Live token stream for the active lane. Ephemeral: forwarded to
+            # the client for the live card but not persisted to history.
+            await safe_send({
+                "type": "stream",
+                "stage": event.get("stage", ""),
+                "thinking": redact_paths(event.get("thinking", "")),
+                "output": redact_paths(event.get("output", "")),
+            })
+            continue
+
+        if etype == "activity":
+            session = STORE.get(session_id)
+            message = event.get("message")
+            if isinstance(message, dict):
+                session["messages"].append(message)
                 STORE.save(session)
-                await websocket.send_text(json.dumps({
-                    "type": "stage",
-                    "stage": event["stage"],
-                    "status": status,
-                    "label": stage_label(event["stage"]),
-                    "detail": STAGE_RUNNING_TEXT.get(event["stage"], ""),
-                    "agent": event.get("agent", ""),
-                    "agent_label": event.get("agent_label", ""),
-                    "stages": session["stages"],
-                }, ensure_ascii=False))
-                if activity is not None:
-                    await websocket.send_text(json.dumps({"type": "activity", "message": activity}, ensure_ascii=False))
-    except WebSocketDisconnect:
-        future.cancel()
-        return
+                await safe_send({"type": "activity", "message": message})
+            continue
+
+        if etype == "stage":
+            session = STORE.get(session_id)
+            set_stage(session, event["stage"], event.get("status", "running"))
+            status = event.get("status", "running")
+            key = f"{event['stage']}:{status}"
+            activity = None
+            if status in ("running", "waiting", "done") and key not in activity_seen:
+                activity_seen.add(key)
+                activity = stage_activity(event["stage"], status)
+                session["messages"].append(activity)
+            STORE.save(session)
+            await safe_send({
+                "type": "stage",
+                "stage": event["stage"],
+                "status": status,
+                "label": stage_label(event["stage"]),
+                "detail": STAGE_RUNNING_TEXT.get(event["stage"], ""),
+                "agent": event.get("agent", ""),
+                "agent_label": event.get("agent_label", ""),
+                "stages": session["stages"],
+            })
+            if activity is not None:
+                await safe_send({"type": "activity", "message": activity})
 
     if run_error:
         session = STORE.get(session_id)
         error_message = ui_message("system", run_error, tone="error")
         session["messages"].append(error_message)
         STORE.save(session)
-        try:
-            await websocket.send_text(json.dumps({"type": "error", "message": error_message}, ensure_ascii=False))
-        except Exception:
-            pass
+        await safe_send({"type": "error", "message": error_message})
 
-    try:
-        await websocket.send_text(json.dumps({"type": "run_done"}, ensure_ascii=False))
-    except Exception:
-        pass
+    await safe_send({"type": "run_done"})
 
 
 async def handle_chat(websocket: Any, session_id: str, content: str, upload_ids: list[str]) -> None:
